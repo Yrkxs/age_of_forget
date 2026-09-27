@@ -14,6 +14,7 @@ void UsrAI::processData()
 //#################################################################################################
     tagInfo info = getInfo();  //本帧快照
     gameFrame = info.GameFrame;
+    getPhase(gameFrame);
     if(gameFrame%25!=0) return;
 
 
@@ -116,7 +117,21 @@ void UsrAI::manageFarmer(const tagInfo& info)
     if(rangenum>=rangeTarget) homeTarget = 13;
     
     if(homenum>=13&&rangenum>=rangeTarget) xx+= 0;
-    else xx+= 1;
+    else{
+        xx+=taskTarget[TASK_BUILD]=1;
+    }
+    
+    if(taskTarget[TASK_BUILD]){
+        if(buildSN==-1){
+           for(const tagFarmer& f : info.farmers){ buildSN = f.SN; break; }
+        }
+        if(buildSN >= 0){                                 // 每帧重申身份，防止被分配器改掉
+            humantask[buildSN]     = TASK_BUILD;           // 6
+            humantaskType[buildSN] = TASK_BUILD;
+        }
+    }else{
+        buildSN = -1;                                     // 不需要建造工时释放（可选）
+    }
 
     if(towernum>=towerTarget) needTower=false;
     if(needTower&&(towernum*150+info.Stone<=450)) xx+=taskTarget[TASK_STONE] = 2;
@@ -131,9 +146,9 @@ void UsrAI::manageFarmer(const tagInfo& info)
     taskTarget[TASK_FOOD] = (pop-xx);
 
     if(taskTarget[TASK_STONE] == 0 && !stoneSN.empty()){
-        for(auto it = stoneSN.begin();it!=stoneSN.end();++it){
+        for(auto it = stoneSN.begin();it!=stoneSN.end();){
             freeSN[it->first]=it->second;
-            stoneSN.erase(it);
+            it = stoneSN.erase(it);
         }
     }
     if(homenum>=13&&rangenum>=rangeTarget){
@@ -143,9 +158,9 @@ void UsrAI::manageFarmer(const tagInfo& info)
     if(rangenum>=3){
         taskTarget[TASK_FARM] = taskTarget[TASK_FOOD];
         taskTarget[TASK_FOOD] = 0;
-        for(auto it = foodSN.begin();it!=foodSN.end();++it){
+        for(auto it = foodSN.begin();it!=foodSN.end();){
             farmSN[it->first]=foodSN[it->second];
-            foodSN.erase(it);
+            it = foodSN.erase(it);
         }
     }
 
@@ -156,24 +171,23 @@ void UsrAI::manageFarmer(const tagInfo& info)
             aliveSN[f.SN]=1;
         }
     }
-    for(auto it = humantask.begin();it!=humantask.end();++it){
+    for(auto it = humantask.begin(); it != humantask.end(); ){
         if(!aliveSN.count(it->first)){
-            humantask.erase(it);
-            if(humantaskType.count(it->first)){
-                humantask.erase(it->first);
-            }
-        }
+            humantaskType.erase(it->first);      // 先用 key 删另一个 map
+            it = humantask.erase(it);            // 再用返回值推进
+        }else ++it;
     }
     if(buildSN>=0&& !aliveSN.count(buildSN)) buildSN=-1;
   
     for(const tagFarmer& f: info.farmers){
+        if(buildSN>=0&&f.SN==buildSN) continue; 
         if(!humantask.count(f.SN)){
             humantask[f.SN]=-1;
             humantaskType[f.SN] = -1;
         }
     }
     // 检查超员
-    int curnum[6]={0,0,0,0,0,0};
+    int curnum[7]={0,0,0,0,0,0,0};
     for(auto it=humantask.begin();it!=humantask.end();++it){
         if(it->second==-1){
             freeSN[it->first]=it->second;
@@ -221,8 +235,9 @@ void UsrAI::manageFarmer(const tagInfo& info)
                 continue;
             }
         }
-        if(humantaskType.count(f.SN)){
-            if(humantaskType[f.SN]==humantask[f.SN]) continue;
+        if(humantaskType.count(f.SN) && humantaskType[f.SN]==humantask[f.SN]){
+            if(f.WorkObjectSN >= 0 && f.WorkObjectSN/10000 != SORT_BUILDING) continue;
+            humantaskType[f.SN] = -1;                                // 手已空 → 放行重派
         }
         if(f.NowState != HUMAN_STATE_IDLE) continue;
         if(humantask[f.SN]==1){
@@ -447,22 +462,38 @@ void UsrAI::manageBuild(const tagInfo& info)
             }
         }
         for(const tagFarmer& f : info.farmers){
-            if(f.SN ==buildSN && f.NowState == HUMAN_STATE_IDLE){
-                if(foundationSN >= 0){
-                   HumanAction(buildSN,foundationSN);
-                }else{
-                   HumanBuild(buildSN,wantType,buildDR,buildUR);
-                }
-                return;
+            if(buildSN < 0) return;
+            int hisWork = -1;
+            for(const tagFarmer& f : info.farmers){
+                if(f.SN == buildSN){ hisWork = f.WorkObjectSN; break; }
             }
+            if(foundationSN >= 0){                       // 已有地基/工地 → 让他接着建
+                if(hisWork != foundationSN) HumanAction(buildSN, foundationSN);
+            }else{                                       // 没有地基 → 下新建令
+                HumanBuild(buildSN, wantType, buildDR, buildUR);
+            }
+            return;
         }
     }
 }
 
 void UsrAI::manageResearch(const tagInfo& info){
     // ① 观察：任何"正在研发中"的动作都记下来（Project 就是当前动作）→ 之后不再重复下令
-    for(const tagBuilding& b : info.buildings)
-        if(b.Project != ACT_NULL) techDone.insert(b.Project);
+    for(const tagBuilding& b : info.buildings){
+        if(b.Project != ACT_NULL){
+            switch(b.Project){
+                case BUILDING_GRANARY_ARROWTOWER:
+                case BUILDING_RANGE_UPGRADE_COMPOSITE_BOW:
+                case BUILDING_MARKET_WOOD_UPGRADE:
+                case BUILDING_MARKET_CRAFT_UPGRADE:
+                case BUILDING_STOCK_UPGRADE_USETOOL:
+                case BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER:
+                case BUILDING_MARKET_FARM_UPGRADE:
+                    techDone.insert(b.Project); break;      // 造兵/造农民/升时代不记
+                default: break;
+            }
+        }
+    }
     if(!arrowTechOrdered && techDone.count(BUILDING_GRANARY_ARROWTOWER)) arrowTechOrdered = true;   // 真开始研发了才算数
 
     // ③ 经济科技
@@ -483,7 +514,8 @@ void UsrAI::manageResearch(const tagInfo& info){
 }
 
 bool UsrAI::researchIfPossible(const tagInfo& info,int buildingType,int action,
-         int needFood,int needWood,int needStone,int needGold){
+         int needFood,int needWood,int needStone,int needGold)
+{
             if(techDone.count(action)) return true;          // 已研发/在研发 → 不重复下令
             if(info.Meat < needFood || info.Wood < needWood || info.Stone < needStone
                || info.Gold < needGold) return false;
@@ -511,13 +543,6 @@ void UsrAI::manageScout(const tagInfo& info)
 
     double hx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * B;
     double hy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * B;
-
-    if(scoutState == SCOUT_WAIT){
-        if(mycenterDR >= 0 && info.GameFrame >= 100){
-            scoutState = SCOUT_OUT;
-        }
-        return;
-    }
 
     if(scoutState == SCOUT_RETURN){
         double d;
@@ -553,14 +578,14 @@ void UsrAI::manageScout(const tagInfo& info)
 
     if(scoutState == SCOUT_REST){
         if(gameFrame < homeRestUntil) return;
-        if(!netReady) buildScoutNet();
+        if(!netReady) buildScoutNet(info);
         netCur = -1;
         scoutTgtDR = -1; scoutTgtUR = -1;
         scoutState = SCOUT_OUT;
         return;
     }
 
-    if(!netReady) buildScoutNet();
+    if(!netReady) buildScoutNet(info);
     if(netL.empty()) return;
 
     if(gameFrame - lastScanFrame >= 25){
@@ -598,16 +623,29 @@ void UsrAI::manageScout(const tagInfo& info)
         lastDR = scoutTgtDR;
         lastUR = scoutTgtUR;
         lastOrderFrame = gameFrame;
+        pointStartFrame = gameFrame;     // ← 新增：本网点开始追的时间
+        stuckCnt = 0;                    // ← 新增：换点就重置
         return;
     }
-    double dw;
-    bool stopped;
+    double dw = 1e18;
+    bool stopped = false;
+    bool gotP = false;
     for(const tagArmy& p:info.armies){
         if(p.SN == priestSN){
             dw = calDistance(p.DR, p.UR, scoutTgtDR, scoutTgtUR);
             stopped = (fabs(p.DR-lastDR) < 0.5 && fabs(p.UR-lastUR) < 0.5);
+            // ↓↓↓ 新增：这次的位置 vs 上次采样的位置
+            if(fabs(p.DR - lastPDR) < 0.5 && fabs(p.UR - lastPUR) < 0.5) stuckCnt++;
+            else { stuckCnt = 0; lastPDR = p.DR; lastPUR = p.UR; }
             break;
         }
+    }
+    if(!gotP) return; 
+    if(stuckCnt >= 3 || gameFrame - pointStartFrame > 400){
+        if(netCur >= 0 && netCur < (int)netL.size()) netDone[netCur] = 1;
+        scoutTgtDR = -1; scoutTgtUR = -1;
+        stuckCnt = 0;
+        return;
     }
     if(dw<3*B||stopped){
         scoutTgtDR = -1;
@@ -624,8 +662,9 @@ void UsrAI::manageScout(const tagInfo& info)
 }
 
 
-void UsrAI::buildScoutNet()
+void UsrAI::buildScoutNet(const tagInfo& info)
 {
+    if(info.theMap==nullptr) return;
     netL.clear();
     netU.clear();
     netDone.clear();
@@ -654,6 +693,7 @@ void UsrAI::buildScoutNet()
             int row = (i % 2 == 0) ? k : (n - 1 - k);      // 蛇形：奇数列反向，避免横跳
             int u = (sy > 0) ? (inset + row*step) : (MAP_U - inset - row*step);
             if(A*l + Bv*u - K > LIM) continue;             // 敌方那半边超10格子 → 丢掉
+            if((*info.theMap)[l][u].type!=1) continue;
             netL.push_back(double(l)); netU.push_back(double(u));
         }
     }
@@ -721,7 +761,7 @@ void UsrAI::manageAttackKite(const tagInfo &info)
     int etowerSN = -1, etowerBL = -1, etowerBU = -1; double bestTd = 1e18;
     int etowerNum=-1;
     for(const tagBuilding& b : info.enemy_buildings){
-        if(b.Type != BUILDING_SIEGE){
+        if(b.Type == BUILDING_SIEGE){
             siegeSN=b.SN;
             continue;
         }

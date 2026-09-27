@@ -66,8 +66,8 @@ private:
     std::map<int,int> freeSN;
     std::map<int,int> takenSource;
     int buildSN=-1;
-    enum FarmerTask{T0,TASK_FOOD,TASK_WOOD,TASK_STONE,TASK_GOLD,TASK_FARM};
-    int taskTarget[6] = {0,0,0,0,0,0};
+    enum FarmerTask{T0,TASK_FOOD,TASK_WOOD,TASK_STONE,TASK_GOLD,TASK_FARM,TASK_BUILD};
+    int taskTarget[7] = {0,0,0,0,0,0,0};
     double enemySafeBlocks = 20.0;
 
     void manageFarmer(const tagInfo& info); 
@@ -103,15 +103,18 @@ private:
 
     // manageScout()
     enum GamePhase{ PHASE_ECON, PHASE_DEFEND1, PHASE_DEFEND23, PHASE_ATTACK };
-    enum ScoutState{ SCOUT_WAIT, SCOUT_OUT, SCOUT_RETURN, SCOUT_REST, SCOUT_DONE };  // 加 REST
+    enum ScoutState{ SCOUT_OUT, SCOUT_RETURN, SCOUT_REST, SCOUT_DONE };  // 加 REST
     int phase = PHASE_ECON;
-    int scoutState = SCOUT_WAIT;
+    int scoutState;
     int priestSN = -1;
     double lastDR=-1.0,lastUR=-1.0;
     double scoutTgtDR = -1;
     double scoutTgtUR = -1;
     int lastOrderFrame = 0;
     int homeRestUntil = 0;
+    double lastPDR = -1, lastPUR = -1;   // 上次采样时祭司所在位置（判断有没有真的在挪）
+    int    stuckCnt = 0;                 // 连续多少次采样位置没变
+    int    pointStartFrame = 0;          // 当前网点是从哪一帧开始追的
     
     int netCur = -1;                 // 当前正在去的网点（-1=没有目标）
     int netNext = 0;                 // 下一个待处理网点的搜索起点（单调前进）
@@ -122,7 +125,7 @@ private:
 
     void manageScout(const tagInfo& info);
     int getPhase(int &gameFrame);
-    void buildScoutNet();
+    void buildScoutNet(const tagInfo& info);
 
     // manageArmyKite()
     bool isArmyReady=false;
