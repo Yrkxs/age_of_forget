@@ -102,10 +102,14 @@ private:
     bool researchIfPossible(const tagInfo &info, int buildingType, int action, int needFood, int needWood, int needStone, int needGold);
 
     // manageScout()
+    double pointStartDR = -1, pointStartUR = -1;
+    int    pointStartFrame = 0;  
     enum GamePhase{ PHASE_ECON, PHASE_DEFEND1, PHASE_DEFEND23, PHASE_ATTACK };
     enum ScoutState{ SCOUT_OUT, SCOUT_RETURN, SCOUT_REST, SCOUT_DONE };  // 加 REST
     int phase = PHASE_ECON;
-    int scoutState;
+    int scoutState=SCOUT_OUT;
+    double lastPosDR = -1, lastPosUR = -1;   // ← 新增：上次采样位置
+    int    stillCnt  = 0;                    // ← 新增：连续几次没动
     int priestSN = -1;
     double lastDR=-1.0,lastUR=-1.0;
     double scoutTgtDR = -1;
@@ -114,7 +118,6 @@ private:
     int homeRestUntil = 0;
     double lastPDR = -1, lastPUR = -1;   // 上次采样时祭司所在位置（判断有没有真的在挪）
     int    stuckCnt = 0;                 // 连续多少次采样位置没变
-    int    pointStartFrame = 0;          // 当前网点是从哪一帧开始追的
     
     int netCur = -1;                 // 当前正在去的网点（-1=没有目标）
     int netNext = 0;                 // 下一个待处理网点的搜索起点（单调前进）

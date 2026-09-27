@@ -43,7 +43,7 @@ void UsrAI::processData()
     manageAttackKite(info);
 
     // 防御
-    manageDefense(info);
+    if(phase!=PHASE_ECON) manageDefense(info);
 
     // 升级时代
     manageUpdate(info);
@@ -106,6 +106,7 @@ void UsrAI::manageFarmer(const tagInfo& info)
     //人员分配
     int pop = (int)info.farmers.size();
     int xx = taskTarget[TASK_GOLD] = 2;
+    takenSource.clear();
     int homenum = 0;
     int rangenum = 0;
     int towernum = 0;
@@ -140,7 +141,7 @@ void UsrAI::manageFarmer(const tagInfo& info)
     if(info.civilizationStage<=CIVILIZATION_BRONZEAGE){
         xx+=taskTarget[TASK_WOOD] = (pop-xx)*40/100;
     }else{
-        xx+=taskTarget[TASK_WOOD] = (pop-xx)*30/100;
+        xx+=taskTarget[TASK_WOOD] = (pop-xx)*10/100;
     }
 
     taskTarget[TASK_FOOD] = (pop-xx);
@@ -155,7 +156,7 @@ void UsrAI::manageFarmer(const tagInfo& info)
         freeSN[buildSN]=-1;
         buildSN=-1;
     }
-    if(rangenum>=3){
+    if(info.civilizationStage>=CIVILIZATION_BRONZEAGE){
         taskTarget[TASK_FARM] = taskTarget[TASK_FOOD];
         taskTarget[TASK_FOOD] = 0;
         for(auto it = foodSN.begin();it!=foodSN.end();){
@@ -221,11 +222,79 @@ void UsrAI::manageFarmer(const tagInfo& info)
         }
     }
 
+        
+        std::cerr << "[alloc] stage=" << info.civilizationStage
+                  << " pop=" << info.farmers.size() << " human=" << humantask.size()
+                  << " tgt F" << taskTarget[1] << " W" << taskTarget[2] << " S" << taskTarget[3]
+                  << " G" << taskTarget[4] << " Farm" << taskTarget[5] << " B" << taskTarget[6]
+                  << " cur F" << curnum[1] << " W" << curnum[2] << " S" << curnum[3]
+                  << " G" << curnum[4] << " Farm" << curnum[5] << " B" << curnum[6]
+                  << std::endl;
+        int shown = 0;
+        for(const tagFarmer& f : info.farmers){
+            if(shown++ >= 8) break;
+            std::cerr << "   sn=" << f.SN
+                      << " task=" << humantask[f.SN]
+                      << " state=" << f.NowState
+                      << " wo=" << f.WorkObjectSN
+                      << " pos=(" << (int)(f.DR/BLOCKSIDELENGTH) << "," << (int)(f.UR/BLOCKSIDELENGTH) << ")"
+                      << std::endl;
+        }
+    
     // 执行任务
     for(const tagFarmer& f:info.farmers){
         // 去除不可下达任务情况
         if(!humantask.count(f.SN)) continue;
         if(f.SN==buildSN) continue;
+        if(humantask[f.SN] == TASK_FARM){
+            const bool woodEnough = (info.Wood >= BUILD_FARM_WOOD);
+            const bool hasMarket  = (countBuilding(info, BUILDING_MARKET) > 0);
+
+            // 手上是不是树（用来判断要不要打断）
+            bool handIsTree = false;
+            if(f.WorkObjectSN >= 0)
+                for(const tagResource& r : info.resources)
+                    if(r.SN == f.WorkObjectSN){ handIsTree = (r.Type == RESOURCE_TREE); break; }
+
+            if(woodEnough && hasMarket){
+                // ---- 木头够了：优先种田 / 建田（手里的活不对就打断）----
+                int freeFarm = -1; double bestD = 1e18;
+                for(const tagBuilding& b : info.buildings){
+                    if(b.Type != BUILDING_FARM || b.Percent < 100) continue;
+                    bool used = false;
+                    for(const tagFarmer& g : info.farmers)
+                        if(g.WorkObjectSN == b.SN){ used = true; break; }
+                    if(used) continue;
+                    double dd = calDistance(f.DR, f.UR,
+                                            b.BlockDR*BLOCKSIDELENGTH,
+                                            b.BlockUR*BLOCKSIDELENGTH);
+                    if(dd < bestD){ bestD = dd; freeFarm = b.SN; }
+                }
+                if(freeFarm >= 0){
+                    if(f.WorkObjectSN != freeFarm) HumanAction(f.SN, freeFarm);   // ★ 打断去种田
+                    continue;
+                }
+                int bd = -1, bu = -1;
+                if(findBuildSite(info, BUILDING_FARM, myfameDR, myfameUR, bd, bu)){
+                    if(!handIsTree || f.NowState == HUMAN_STATE_IDLE)
+                        ;                                                  // 占位，见下
+                    HumanBuild(f.SN, BUILDING_FARM, bd, bu);                // ★ 建田（覆盖砍木）
+                    continue;
+                }
+                // 木头够、但既没空田也找不到地基 → 原地等（别乱跑去采集）
+                continue;
+            }
+
+            // ---- 木头不够：去砍木（正在采食物/闲着的都改派去砍木）----
+            if(!handIsTree){
+                int rsn = findNearestResource(info, RESOURCE_TREE, f.DR, f.UR);
+                if(rsn >= 0){
+                    takenSource[rsn] = 1;
+                    HumanAction(f.SN, rsn);                                // ★ 打断 → 去砍木
+                }
+            }
+            continue;         
+        }                                 
         if(humantask[f.SN]==6){
             if(f.NowState!= HUMAN_STATE_IDLE){
                 continue;
@@ -235,10 +304,6 @@ void UsrAI::manageFarmer(const tagInfo& info)
                 continue;
             }
         }
-        if(humantaskType.count(f.SN) && humantaskType[f.SN]==humantask[f.SN]){
-            if(f.WorkObjectSN >= 0 && f.WorkObjectSN/10000 != SORT_BUILDING) continue;
-            humantaskType[f.SN] = -1;                                // 手已空 → 放行重派
-        }
         if(f.NowState != HUMAN_STATE_IDLE) continue;
         if(humantask[f.SN]==1){
             int fSN = findNearestFood(info,f.DR,f.UR,takenSource);
@@ -247,25 +312,45 @@ void UsrAI::manageFarmer(const tagInfo& info)
                 humantaskType[f.SN]=1;
                 HumanAction(f.SN,fSN);
             }
-        }else if(humantask[f.SN]==5){
-            if(info.Wood>=BUILD_FARM_WOOD && countBuilding(info,BUILDING_MARKET)>0){
-                int bd = -1,bu = -1;
-                if(findBuildSite(info,BUILDING_FARM,myfameDR,myfameUR,bd,bu)){
-                    HumanBuild(f.SN,BUILDING_FARM,bd,bu);
-                    humantaskType[f.SN] = 5;
-                }
-            }else{
-
-            }
-        }else{
-            int resType = (humantask[f.SN] == TASK_WOOD) ? RESOURCE_TREE :
-                          (humantask[f.SN] == TASK_STONE) ? RESOURCE_STONE :
-                                               RESOURCE_GOLD;
+        }else if(humantask[f.SN]==TASK_WOOD){
+            int resType =  RESOURCE_TREE;
             int rsn = findNearestResource(info,resType,f.DR,f.UR);
             if(rsn >= 0){
                 takenSource[rsn]=1;
                 humantaskType[f.SN]=humantask[f.SN];
                 HumanAction(f.SN,rsn);
+            }
+        }else if(humantask[f.SN]==TASK_GOLD){
+
+            // 手上已经在采金 → 不打扰
+            bool handIsGold = false;
+            if(f.WorkObjectSN >= 0)
+                for(const tagResource& r : info.resources)
+                    if(r.SN == f.WorkObjectSN){ handIsGold = (r.Type == RESOURCE_GOLD); break; }
+            if(handIsGold) continue;
+
+            if(f.NowState != HUMAN_STATE_IDLE) continue;      // 在忙别的 → 等它空
+
+            int goldSN = findNearestResource(info, RESOURCE_GOLD, f.DR, f.UR);
+            if(goldSN >= 0){
+                takenSource[goldSN] = 1;
+                humantaskType[f.SN] = TASK_GOLD;
+                HumanAction(f.SN, goldSN);
+            }
+        }else if(humantask[f.SN]==TASK_STONE){
+            bool handIsStone = false;
+            if(f.WorkObjectSN >= 0)
+                for(const tagResource& r : info.resources)
+                    if(r.SN == f.WorkObjectSN){ handIsStone = (r.Type == RESOURCE_STONE); break; }
+            if(handIsStone) continue;
+
+            if(f.NowState != HUMAN_STATE_IDLE) continue;      // 在忙别的 → 等它空
+
+            int stoneSN = findNearestResource(info, RESOURCE_STONE, f.DR, f.UR);
+            if(stoneSN  >= 0){
+                takenSource[stoneSN ] = 1;
+                humantaskType[f.SN] = TASK_GOLD;
+                HumanAction(f.SN, stoneSN );
             }
         }
     }
@@ -530,194 +615,188 @@ bool UsrAI::researchIfPossible(const tagInfo& info,int buildingType,int action,
 
 void UsrAI::manageScout(const tagInfo& info)
 {
-    if(phase!= PHASE_ECON) return;
-    if(scoutState == SCOUT_DONE) return;
     const double B = BLOCKSIDELENGTH;
+    const double hx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * B;
+    const double hy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * B;
 
-    if(priestSN<0){
-        for(const tagArmy& a : info.armies){
-            if(a.Sort == AT_PRIEST){ priestSN = a.SN;break;}
-        }
-        if(priestSN < 0) return; 
+    if(priestSN < 0){
+        for(const tagArmy& a : info.armies)
+            if(a.Sort == AT_PRIEST){ priestSN = a.SN; break; }
+    }
+    if(priestSN < 0) return;
+
+    // ===== 时间到 → 回家（只切一次状态） =====
+    if(phase != PHASE_ECON && (scoutState == SCOUT_OUT || scoutState == SCOUT_REST)){
+        scoutState = SCOUT_RETURN;
+        scoutTgtDR = -1; scoutTgtUR = -1;
+        HumanMove(priestSN, hx, hy);
+        lastOrderFrame = gameFrame;
     }
 
-    double hx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * B;
-    double hy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * B;
-
+    // ===== 回家 =====
     if(scoutState == SCOUT_RETURN){
-        double d;
-        for(const tagArmy& p:info.armies){
-            if(p.SN == priestSN){
-                d=calDistance(p.DR,p.UR, hx, hy);
-                break;
-            }
+        double d = 1e18; bool gotP = false;
+        for(const tagArmy& p : info.armies){
+            if(p.SN != priestSN) continue;
+            d = calDistance(p.DR, p.UR, hx, hy); gotP = true; break;
         }
-        if(d<3*B){
-            if(phase!=PHASE_ECON){
-                scoutState = SCOUT_DONE; 
-            }else{
-                homeRestUntil = gameFrame + 25;          // 在家歇~10秒
-                scoutState = SCOUT_REST;
-                scoutTgtDR = -1; scoutTgtUR = -1;
-            }
-        }else if(scoutTgtDR != hx || scoutTgtUR != hy){
-            bool ff = true;
-            for(const tagArmy& p:info.armies){
-                if(p.SN == priestSN&&p.NowState!=HUMAN_STATE_WALKING&&gameFrame-lastOrderFrame>=25){
-                    ff=false;
-                    break;
-                }
-            }
-            if(ff) return;
-            scoutTgtDR = hx; scoutTgtUR = hy;
-            lastOrderFrame = gameFrame;
+        if(!gotP) return;
+        if(d < 3*B){                                    // 到家
+            if(phase != PHASE_ECON) scoutState = SCOUT_DONE;
+            else { homeRestUntil = gameFrame + 25; scoutState = SCOUT_REST; }
+            scoutTgtDR = -1; scoutTgtUR = -1; stillCnt = 0;
+            return;
+        }
+        if(gameFrame - lastOrderFrame >= 25){
             HumanMove(priestSN, hx, hy);
+            lastOrderFrame = gameFrame;
         }
         return;
     }
+    if(scoutState == SCOUT_DONE) return;
 
+    // ===== 在家休息完 → 继续探路 =====
     if(scoutState == SCOUT_REST){
         if(gameFrame < homeRestUntil) return;
         if(!netReady) buildScoutNet(info);
-        netCur = -1;
+        netCur = -1; netNext = 0;
         scoutTgtDR = -1; scoutTgtUR = -1;
         scoutState = SCOUT_OUT;
         return;
     }
+    scoutState = SCOUT_OUT;                             // 兜底：任何非法状态都当 OUT
 
-    if(!netReady) buildScoutNet(info);
+    // ===== 探路 =====
+    if(!netReady || (int)netL.size() < 10) buildScoutNet(info);   // 点太少 = 无效，重建
     if(netL.empty()) return;
+    if(netL.empty()) return;
+    const int NP = (int)netL.size();
+    if((int)netDone.size() < NP) netDone.assign(NP, 0);
 
-    if(gameFrame - lastScanFrame >= 25){
-        lastScanFrame = info.GameFrame;
+    if(gameFrame - lastScanFrame >= 25){                // 敌人 25 格内 → 拉黑
+        lastScanFrame = gameFrame;
         for(const tagArmy& e : info.enemy_armies){
             if(e.Blood <= 0) continue;
             double edr = e.DR / B, eur = e.UR / B;
-            for(size_t i = 0; i < netL.size(); i++)
-                if(!netDone[i] && calDistance(netL[i], netU[i], edr, eur) < 25)
-                    netDone[i] = 1;
+            for(int i = 0; i < NP; i++)
+                if(!netDone[i] && calDistance(netL[i], netU[i], edr, eur) < 25) netDone[i] = 1;
+        }
+    }
+    if(scoutTgtDR >= 0 && netCur >= 0 && netCur < NP && netDone[netCur]){
+        scoutTgtDR = -1; scoutTgtUR = -1;
+        stillCnt = 0;
+        std::cerr << "[net] 当前点被敌人拉黑，切下一个 (cur=" << netCur << ")" << std::endl;
+    }
+    double pdr = -1, pur = -1; bool got = false;
+    for(const tagArmy& p : info.armies){
+        if(p.SN != priestSN) continue;
+        pdr = p.DR; pur = p.UR; got = true; break;
+    }
+    if(!got) return;
+
+    // 卡住检测：只看"位置有没有变"，与时间无关
+    if(fabs(pdr - lastPosDR) < 0.5 && fabs(pur - lastPosUR) < 0.5) stillCnt++;
+    else { stillCnt = 0; lastPosDR = pdr; lastPosUR = pur; }
+
+    std::cerr << "[net] f=" << gameFrame << " pts=" << NP
+              << " cur=" << netCur << " next=" << netNext
+              << " tgt=(" << scoutTgtDR/B << "," << scoutTgtUR/B << ")"
+              << " pos=(" << pdr/B << "," << pur/B << ")"
+              << " dw=" << (scoutTgtDR>=0 ? calDistance(pdr,pur,scoutTgtDR,scoutTgtUR)/B : -1)
+              << "B still=" << stillCnt << " state=" << scoutState << std::endl;
+
+    // 换点判据：只有 ①到达 ②真的没动
+    if(scoutTgtDR >= 0){
+        double dw = calDistance(pdr, pur, scoutTgtDR, scoutTgtUR);
+        if(dw < 3*B){                                   // ① 到达
+            scoutTgtDR = -1; scoutTgtUR = -1; stillCnt = 0;
+        }else if(stillCnt >= 4){                        // ② 卡住（无任何定时）
+            if(netCur >= 0 && netCur < NP) netDone[netCur] = 1;
+            scoutTgtDR = -1; scoutTgtUR = -1; stillCnt = 0;
         }
     }
 
-    if(scoutTgtDR >= 0 && netCur >= 0 && netCur < (int)netL.size() && netDone[netCur]){
-        scoutTgtDR = -1; scoutTgtUR = -1;
-    }
-
+    // 选新点：环形推进，走完一轮自动重来
     if(scoutTgtDR < 0){
-        if(netCur >= 0 && netCur < (int)netL.size()) netDone[netCur] = 1;   // 上一个点永久拉黑
-        netCur = -1;
-        for(int i = netNext; i < (int)netL.size(); i++){
-            if(netDone[i]) continue;
-            netCur = i; break;
+        int pick = -1;
+        for(int k = 0; k < NP; k++){
+            int i = (netNext + k) % NP;
+            if(!netDone[i]){ pick = i; break; }
         }
-        if(netCur < 0){                                        // 全图都走过了 → 清空拉黑，再巡一遍
-            for(size_t i = 0; i < netDone.size(); i++) netDone[i] = 0;
-            netNext = 0; netCur = -1;
-            scoutTgtDR = -1; scoutTgtUR = -1;
-            return;
+        if(pick < 0){
+            for(int i = 0; i < NP; i++) netDone[i] = 0;
+            pick = netNext % NP;
         }
-        netNext    = netCur + 1;
-        scoutTgtDR = netL[netCur]*B + B/2;
-        scoutTgtUR = netU[netCur]*B + B/2;
+        netCur  = pick;
+        netNext = (pick + 1) % NP;
+        scoutTgtDR = netL[pick]*B + B/2;
+        scoutTgtUR = netU[pick]*B + B/2;
+        stillCnt = 0; lastPosDR = pdr; lastPosUR = pur;
+        lastOrderFrame = gameFrame;
         HumanMove(priestSN, scoutTgtDR, scoutTgtUR);
-        lastDR = scoutTgtDR;
-        lastUR = scoutTgtUR;
-        lastOrderFrame = gameFrame;
-        pointStartFrame = gameFrame;     // ← 新增：本网点开始追的时间
-        stuckCnt = 0;                    // ← 新增：换点就重置
         return;
     }
-    double dw = 1e18;
-    bool stopped = false;
-    bool gotP = false;
-    for(const tagArmy& p:info.armies){
-        if(p.SN == priestSN){
-            dw = calDistance(p.DR, p.UR, scoutTgtDR, scoutTgtUR);
-            stopped = (fabs(p.DR-lastDR) < 0.5 && fabs(p.UR-lastUR) < 0.5);
-            // ↓↓↓ 新增：这次的位置 vs 上次采样的位置
-            if(fabs(p.DR - lastPDR) < 0.5 && fabs(p.UR - lastPUR) < 0.5) stuckCnt++;
-            else { stuckCnt = 0; lastPDR = p.DR; lastPUR = p.UR; }
-            break;
-        }
-    }
-    if(!gotP) return; 
-    if(stuckCnt >= 3 || gameFrame - pointStartFrame > 400){
-        if(netCur >= 0 && netCur < (int)netL.size()) netDone[netCur] = 1;
-        scoutTgtDR = -1; scoutTgtUR = -1;
-        stuckCnt = 0;
-        return;
-    }
-    if(dw<3*B||stopped){
-        scoutTgtDR = -1;
-        scoutTgtUR = -1;
-        return;
-    }
-    if(gameFrame-lastOrderFrame >=50){
-        HumanMove(priestSN,scoutTgtDR,scoutTgtUR);
-        lastOrderFrame = gameFrame;
-        lastDR = scoutTgtDR;
-        lastUR = scoutTgtUR;
-    }
-    
-}
 
+    // 同一目标点：25 帧重发一次（绝不在这里换点）
+    if(gameFrame - lastOrderFrame >= 25){
+        HumanMove(priestSN, scoutTgtDR, scoutTgtUR);
+        lastOrderFrame = gameFrame;
+    }
+}
 
 void UsrAI::buildScoutNet(const tagInfo& info)
 {
-    if(info.theMap==nullptr) return;
-    netL.clear();
-    netU.clear();
-    netDone.clear();
-    netCur=-1;
-    netNext=0;
-    if(mycenterDR<0||enemyDR<0) return;
+    netL.clear(); netU.clear(); netDone.clear();
+    netCur = -1; netNext = 0; netReady = false;
+    if(info.theMap == nullptr || mycenterDR < 0 || enemyDR < 0) return;
 
-    const int inset =10;
-    const int step = 15;
-    const int n = 6;
-    const int sx = (mycenterDR<50)?1:-1;
-    const int sy = (mycenterDR<50)?1:-1;
-    
-    // 分界线（两垒连线的中垂线）： A*l + Bv*u = K
-    //   "我方这边" = A*l + Bv*u - K <= 0（取等号就是正好在对角线上）
-    const double A  = double(enemyDR - mycenterDR);
-    const double Bv = double(enemyUR - mycenterUR);
-    const double K  = ((double)enemyDR*enemyDR + (double)enemyUR*enemyUR
+    const int step   = 5;        // ★ 5 格一个点（比 6 密，推进更快）
+    const int margin = 3;
+
+    const double A    = double(enemyDR - mycenterDR);
+    const double Bv   = double(enemyUR - mycenterUR);
+    const double K    = ((double)enemyDR*enemyDR + (double)enemyUR*enemyUR
                        - (double)mycenterDR*mycenterDR - (double)mycenterUR*mycenterUR) / 2.0;
-    const double DLEN = sqrt(A*A + Bv*Bv);        
-    const double LIM  = 6 * DLEN;              // 允许越过分界线 6 格
-    
-    for(int i = 0; i < n; i++){
-        int l = (sx > 0) ? (inset + i*step) : (MAP_L - inset - i*step);
-        for(int k = 0; k < n; k++){
-            int row = (i % 2 == 0) ? k : (n - 1 - k);      // 蛇形：奇数列反向，避免横跳
-            int u = (sy > 0) ? (inset + row*step) : (MAP_U - inset - row*step);
-            if(A*l + Bv*u - K > LIM) continue;             // 敌方那半边超10格子 → 丢掉
-            if((*info.theMap)[l][u].type!=1) continue;
-            netL.push_back(double(l)); netU.push_back(double(u));
-        }
-    }
+    const double DLEN = sqrt(A*A + Bv*Bv);
 
-    if(fabs(Bv) > 1e-9){
-        int lastL = -1000;
-        for(int l = inset; l <= MAP_L - inset; l++){
-            double uf = (K - A*l) / Bv;                    // 解出分界线上的 u
-            int u = (int)(uf + (uf >= 0 ? 0.5 : -0.5));
-            if(fabs(uf - double(u)) > 1e-6) continue;      // 不是整数格点 → 跳过
-            if(u < inset || u > MAP_U - inset) continue;
-            if(l - lastL < 9) continue;                    // 沿线间距
-            lastL = l;
-            netL.push_back(double(l));
-            netU.push_back(double(u));
+    // ===== 一条龙：逐列收集 → 奇偶列反向 → 拼成一条连续路径 =====
+    vector<double> tmpL, tmpU;
+    int keptCol = 0;                                   // 只数"真的有保留点的列"
+    for(int l = margin; l < MAP_L - margin; l += step){
+        vector<int> us;
+        for(int u = margin; u < MAP_U - margin; u += step){
+            if(DLEN > 1e-9 && (A*l + Bv*u - K) > 0) continue;   // 只留我方半边
+            us.push_back(u);
         }
+        if(us.empty()) continue;
+        if(keptCol % 2 == 1) reverse(us.begin(), us.end());      // ★ 蛇形：相邻两列首尾相接
+        for(size_t i = 0; i < us.size(); i++){
+            tmpL.push_back(double(l));
+            tmpU.push_back(double(us[i]));
+        }
+        keptCol++;
     }
-    netL.push_back(mycenterDR);                            // 最后回家，把这个环接上
+    if(tmpL.empty()) return;
+
+    // 起点 = 离基地最近的那个点（旋转后"接缝"落在最远端，路径依旧连续）
+    int start = 0; double bestD = 1e18;
+    for(size_t i = 0; i < tmpL.size(); i++){
+        double dd = (tmpL[i]-mycenterDR)*(tmpL[i]-mycenterDR)
+                  + (tmpU[i]-mycenterUR)*(tmpU[i]-mycenterUR);
+        if(dd < bestD){ bestD = dd; start = (int)i; }
+    }
+    for(size_t k = 0; k < tmpL.size(); k++){
+        int i = (start + (int)k) % (int)tmpL.size();
+        netL.push_back(tmpL[i]);
+        netU.push_back(tmpU[i]);
+    }
+    netL.push_back(mycenterDR);
     netU.push_back(mycenterUR);
 
-    netDone.resize(netL.size(),0);
+    netDone.assign(netL.size(), 0);
     netReady = true;
+    std::cerr << "[net-build] snake pts=" << netL.size() << " cols=" << keptCol << " step=" << step << std::endl;
 }
-
 void UsrAI::manageArmyKite(const tagInfo &info)
 {
     int nBow = 0, nThrow = 0;
@@ -806,7 +885,7 @@ void UsrAI::manageAttackKite(const tagInfo &info)
             }
         }else if(etowerNum>0){
                 if(a.WorkObjectSN!=etowerSN)
-                  HumanAction(a.SN,towerSN);
+                  HumanAction(a.SN,etowerSN);
         }
     }
 }
@@ -837,7 +916,7 @@ void UsrAI::manageDefense(const tagInfo &info)
     for(const tagBuilding& b : info.buildings){
         if(b.Type == BUILDING_ARROWTOWER && b.Percent>=100){
             haveArrowTower = true;
-            if(towerSN<0) towerSN = b.SN;
+            towerSN = b.SN;
             int attackTgt = -1;
             bool isPriestAttack = false;
             for(const tagArmy& e: info.enemy_armies){
@@ -975,7 +1054,6 @@ void UsrAI::manageUpdate(const tagInfo &info)
                 if(b.Project == ACT_NULL){
                     //researchIfPossible(info,BUILDING_MARKET,BUILDING_MARKET_FARM_UPGRADE,200,50,0,0);
                     BuildingAction(b.SN,BUILDING_CENTER_UPGRADE);
-                    homeTarget = 13;
                 }
                 break;
             }
