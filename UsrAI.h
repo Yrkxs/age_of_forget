@@ -68,6 +68,17 @@ private:
     int buildSN=-1;
     enum FarmerTask{T0,TASK_FOOD,TASK_WOOD,TASK_STONE,TASK_GOLD,TASK_FARM,TASK_BUILD};
     int taskTarget[7] = {0,0,0,0,0,0,0};
+    // ===== 任务分组人数（在这里改）=====
+    int wantFood  = 8;      // 采食（浆果+羚羊）
+    int wantWood  = 7;      // 伐木
+    int wantStone = 2;      // 采石
+    int wantGold  = 2;      // 采金
+    int wantBuild = 1;      // 建筑工（不建仓库/谷仓）
+    // ===== 临时建仓库/谷仓 =====
+    std::map<int,int> depotJob;      // 农民SN -> 原任务
+    std::map<int,int> depotJobPos;   // 农民SN -> 工地块(dr*1000+ur)
+    int depotRange   = 20;           // 多少格内没有仓库/谷仓才去建
+    int depotRichCnt = 150;          // 资源"挺多"的门槛
     double enemySafeBlocks = 20.0;
 
     void manageFarmer(const tagInfo& info); 

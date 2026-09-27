@@ -101,256 +101,208 @@ void UsrAI::manageProduction(const tagInfo& info)
 
 
 
+// 任务号：1食 2木 3石 4金 5田 6建筑工（7=临时建仓库，不写进 humantask，用 depotJob 记）
 void UsrAI::manageFarmer(const tagInfo& info)
 {
-    //人员分配
-    int pop = (int)info.farmers.size();
-    int xx = taskTarget[TASK_GOLD] = 2;
+    const double B = BLOCKSIDELENGTH;
     takenSource.clear();
-    int homenum = 0;
-    int rangenum = 0;
-    int towernum = 0;
-    for(const tagBuilding& b: info.buildings){
-        if(b.Type == BUILDING_HOME && b.Percent>=100) homenum++;
-        if(b.Type == BUILDING_RANGE && b.Percent >= 100) rangenum++;
-        if(b.Type == BUILDING_ARROWTOWER) towernum++;
+
+    // ---------- 0. 死掉的农民清出任务表（注意 erase 的写法）----------
+    {
+        std::map<int,int> alive;
+        for(const tagFarmer& f : info.farmers) alive[f.SN] = 1;
+        for(auto it = humantask.begin(); it != humantask.end(); ){
+            if(!alive.count(it->first)){
+                depotJob.erase(it->first);
+                depotJobPos.erase(it->first);
+                if(buildSN == it->first) buildSN = -1;
+                humantaskType.erase(it->first);
+                it = humantask.erase(it);
+            } else ++it;
+        }
+        for(const tagFarmer& f : info.farmers)
+            if(!humantask.count(f.SN)){ humantask[f.SN] = -1; humantaskType[f.SN] = -1; }
     }
-    if(rangenum>=rangeTarget) homeTarget = 13;
+
+    // ---------- 1. 目标人数：升级前田=0；升级后采食的人整体转种田 ----------
+    const bool bronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
+    int tFood  = bronze ? 0 : wantFood;
+    int tFarm  = bronze ? wantFood : 0;
+    int tWood  = wantWood, tStone = wantStone, tGold = wantGold, tBuild = wantBuild;
+    int towernn=0;
+    for(const tagBuilding& b:info.buildings){
+        if(b.Type==BUILDING_ARROWTOWER) towernn++;
+    }
+    if(wantFood==8){
+        if(towernn*150+info.Wood>=450){
+            tStone = 0;
+            wantFood+=2;
+        }
+    }
     
-    if(homenum>=13&&rangenum>=rangeTarget) xx+= 0;
-    else{
-        xx+=taskTarget[TASK_BUILD]=1;
+
+    // ---------- 2. 资源独占：谁正在采哪块，先全部登记（同一块只会有一个人）----------
+    for(const tagFarmer& f : info.farmers)
+        if(f.WorkObjectSN >= 0) takenSource[f.WorkObjectSN] = 1;
+
+    // ---------- 3. 人数平衡：只动空闲的人，正在干活的不打扰 ----------
+    int cnt[8] = {0,0,0,0,0,0,0,0};
+    for(auto& kv : humantask){
+        int t = kv.second;
+        if(t < 0 || t > 6){ t = -1; kv.second = -1; }
+        if(t > 0) cnt[t]++;
     }
-    
-    if(taskTarget[TASK_BUILD]){
-        if(buildSN==-1){
-           for(const tagFarmer& f : info.farmers){ buildSN = f.SN; break; }
+    int tgt[8] = {0, tFood, tWood, tStone, tGold, tFarm, tBuild, 0};
+
+    // 3a. 超编 → 释放（临时建仓库的人不在 humantask 里，天然不受影响）
+    for(int t = 1; t <= 6; t++){
+        while(cnt[t] > tgt[t]){
+            bool moved = false;
+            for(auto& kv : humantask)
+                if(kv.second == t){
+                    kv.second = -1; humantaskType[kv.first] = -1; cnt[t]--;
+                    if(t == TASK_BUILD) buildSN = -1;
+                    moved = true; break;
+                }
+            if(!moved) break;
         }
-        if(buildSN >= 0){                                 // 每帧重申身份，防止被分配器改掉
-            humantask[buildSN]     = TASK_BUILD;           // 6
-            humantaskType[buildSN] = TASK_BUILD;
-        }
-    }else{
-        buildSN = -1;                                     // 不需要建造工时释放（可选）
-    }
 
-    if(towernum>=towerTarget) needTower=false;
-    if(needTower&&(towernum*150+info.Stone<=450)) xx+=taskTarget[TASK_STONE] = 2;
-    else xx+=taskTarget[TASK_STONE] = 0;
-
-    if(info.civilizationStage<=CIVILIZATION_BRONZEAGE){
-        xx+=taskTarget[TASK_WOOD] = (pop-xx)*40/100;
-    }else{
-        xx+=taskTarget[TASK_WOOD] = (pop-xx)*10/100;
     }
-
-    taskTarget[TASK_FOOD] = (pop-xx);
-
-    if(taskTarget[TASK_STONE] == 0 && !stoneSN.empty()){
-        for(auto it = stoneSN.begin();it!=stoneSN.end();){
-            freeSN[it->first]=it->second;
-            it = stoneSN.erase(it);
-        }
-    }
-    if(homenum>=13&&rangenum>=rangeTarget){
-        freeSN[buildSN]=-1;
-        buildSN=-1;
-    }
-    if(info.civilizationStage>=CIVILIZATION_BRONZEAGE){
-        taskTarget[TASK_FARM] = taskTarget[TASK_FOOD];
-        taskTarget[TASK_FOOD] = 0;
-        for(auto it = foodSN.begin();it!=foodSN.end();){
-            farmSN[it->first]=foodSN[it->second];
-            it = foodSN.erase(it);
+    // 3b. 缺编 → 用空闲的人补（顺序：金→石→木→食→田）
+    static const int prio[6] = { TASK_BUILD, TASK_STONE, TASK_FOOD, TASK_GOLD, TASK_WOOD, TASK_FARM };
+    for(int k = 0; k < 6; k++){
+        int t = prio[k];
+        while(cnt[t] < tgt[t]){
+            bool moved = false;
+            for(auto& kv : humantask)
+                if(kv.second == -1){
+                    kv.second = t; humantaskType[kv.first] = -1; cnt[t]++;
+                    if(t == TASK_BUILD) buildSN = kv.first;
+                    moved = true; break;
+                }
+            if(!moved) break;
         }
     }
+    // 建筑工：固定一个人（不参与上面的平衡；manageBuild 给他派活）
+    if(tBuild > 0){
+        if(buildSN < 0)
+            for(auto& kv : humantask) if(kv.second == -1){ buildSN = kv.first; break; }
+        if(buildSN >= 0 && humantask.count(buildSN)) humantask[buildSN] = TASK_BUILD;
+    }
 
-    // 检查死亡
-    std::map<int,int> aliveSN;
+    // ---------- 4. 执行 ----------
     for(const tagFarmer& f : info.farmers){
-        if(!aliveSN.count(f.SN)){
-            aliveSN[f.SN]=1;
-        }
-    }
-    for(auto it = humantask.begin(); it != humantask.end(); ){
-        if(!aliveSN.count(it->first)){
-            humantaskType.erase(it->first);      // 先用 key 删另一个 map
-            it = humantask.erase(it);            // 再用返回值推进
-        }else ++it;
-    }
-    if(buildSN>=0&& !aliveSN.count(buildSN)) buildSN=-1;
-  
-    for(const tagFarmer& f: info.farmers){
-        if(buildSN>=0&&f.SN==buildSN) continue; 
-        if(!humantask.count(f.SN)){
-            humantask[f.SN]=-1;
-            humantaskType[f.SN] = -1;
-        }
-    }
-    // 检查超员
-    int curnum[7]={0,0,0,0,0,0,0};
-    for(auto it=humantask.begin();it!=humantask.end();++it){
-        if(it->second==-1){
-            freeSN[it->first]=it->second;
-        }else{
-            curnum[it ->second]++;
-        }
-    }
-    for(int i=1;i<=5;++i){
-        while(curnum[i] - taskTarget[i] > 0 ){
-            for(auto it=humantask.begin();it!=humantask.end();++it){
-                if(it->second==i){
-                    it->second=-1;
-                    curnum[i]--;
-                    if(curnum[i]==taskTarget[i]) break;
-                }
-            }
-            break;
-        }
-    }
-    // 不足补齐
-    for(int i=1;i<=5;++i){
-        while(curnum[i]-taskTarget[i]<0){
-            for(auto it=humantask.begin();it!=humantask.end();++it){
-                if(it->second==-1){
-                    it->second=i;
-                    curnum[i]++;
-                    if(curnum[i]==taskTarget[i]) break;
-                }
-            }
-            break;
-        }
-    }
-
-        
-        std::cerr << "[alloc] stage=" << info.civilizationStage
-                  << " pop=" << info.farmers.size() << " human=" << humantask.size()
-                  << " tgt F" << taskTarget[1] << " W" << taskTarget[2] << " S" << taskTarget[3]
-                  << " G" << taskTarget[4] << " Farm" << taskTarget[5] << " B" << taskTarget[6]
-                  << " cur F" << curnum[1] << " W" << curnum[2] << " S" << curnum[3]
-                  << " G" << curnum[4] << " Farm" << curnum[5] << " B" << curnum[6]
-                  << std::endl;
-        int shown = 0;
-        for(const tagFarmer& f : info.farmers){
-            if(shown++ >= 8) break;
-            std::cerr << "   sn=" << f.SN
-                      << " task=" << humantask[f.SN]
-                      << " state=" << f.NowState
-                      << " wo=" << f.WorkObjectSN
-                      << " pos=(" << (int)(f.DR/BLOCKSIDELENGTH) << "," << (int)(f.UR/BLOCKSIDELENGTH) << ")"
-                      << std::endl;
-        }
-    
-    // 执行任务
-    for(const tagFarmer& f:info.farmers){
-        // 去除不可下达任务情况
         if(!humantask.count(f.SN)) continue;
-        if(f.SN==buildSN) continue;
-        if(humantask[f.SN] == TASK_FARM){
-            const bool woodEnough = (info.Wood >= BUILD_FARM_WOOD);
-            const bool hasMarket  = (countBuilding(info, BUILDING_MARKET) > 0);
+        int t = humantask[f.SN];
 
-            // 手上是不是树（用来判断要不要打断）
-            bool handIsTree = false;
-            if(f.WorkObjectSN >= 0)
-                for(const tagResource& r : info.resources)
-                    if(r.SN == f.WorkObjectSN){ handIsTree = (r.Type == RESOURCE_TREE); break; }
+        // 建筑工交给 manageBuild
+        if(f.SN == buildSN) continue;
 
-            if(woodEnough && hasMarket){
-                // ---- 木头够了：优先种田 / 建田（手里的活不对就打断）----
-                int freeFarm = -1; double bestD = 1e18;
-                for(const tagBuilding& b : info.buildings){
-                    if(b.Type != BUILDING_FARM || b.Percent < 100) continue;
-                    bool used = false;
-                    for(const tagFarmer& g : info.farmers)
-                        if(g.WorkObjectSN == b.SN){ used = true; break; }
-                    if(used) continue;
-                    double dd = calDistance(f.DR, f.UR,
-                                            b.BlockDR*BLOCKSIDELENGTH,
-                                            b.BlockUR*BLOCKSIDELENGTH);
-                    if(dd < bestD){ bestD = dd; freeFarm = b.SN; }
-                }
-                if(freeFarm >= 0){
-                    if(f.WorkObjectSN != freeFarm) HumanAction(f.SN, freeFarm);   // ★ 打断去种田
-                    continue;
-                }
-                int bd = -1, bu = -1;
-                if(findBuildSite(info, BUILDING_FARM, myfameDR, myfameUR, bd, bu)){
-                    if(!handIsTree || f.NowState == HUMAN_STATE_IDLE)
-                        ;                                                  // 占位，见下
-                    HumanBuild(f.SN, BUILDING_FARM, bd, bu);                // ★ 建田（覆盖砍木）
-                    continue;
-                }
-                // 木头够、但既没空田也找不到地基 → 原地等（别乱跑去采集）
-                continue;
+        // ---- 4.0 临时建仓库/谷仓：建完之前绝不被调走 ----
+        auto dj = depotJob.find(f.SN);
+        if(dj != depotJob.end()){
+            int site = depotJobPos.count(f.SN) ? depotJobPos[f.SN] : -1;
+            int bsn = -1;
+            if(site >= 0)
+                for(const tagBuilding& b : info.buildings)
+                    if(b.BlockDR == site/1000 && b.BlockUR == site%1000 && b.Percent < 100){ bsn = b.SN; break; }
+            if(bsn >= 0){
+                if(f.NowState == HUMAN_STATE_IDLE && f.WorkObjectSN != bsn) HumanAction(f.SN, bsn);
+                continue;                                     // ★ 建完前不调走、不派别的活
             }
-
-            // ---- 木头不够：去砍木（正在采食物/闲着的都改派去砍木）----
-            if(!handIsTree){
-                int rsn = findNearestResource(info, RESOURCE_TREE, f.DR, f.UR);
-                if(rsn >= 0){
-                    takenSource[rsn] = 1;
-                    HumanAction(f.SN, rsn);                                // ★ 打断 → 去砍木
-                }
-            }
-            continue;         
-        }                                 
-        if(humantask[f.SN]==6){
-            if(f.NowState!= HUMAN_STATE_IDLE){
-                continue;
-            }else{
-                humantask[f.SN]=-1;
-                humantaskType[f.SN]=-1;
-                continue;
-            }
+            humantask[f.SN] = dj->second;                     // 建完了 → 回到原任务
+            depotJob.erase(f.SN);
+            depotJobPos.erase(f.SN);
+            t = humantask[f.SN];
         }
-        if(f.NowState != HUMAN_STATE_IDLE) continue;
-        if(humantask[f.SN]==1){
-            int fSN = findNearestFood(info,f.DR,f.UR,takenSource);
-            if(fSN>=0){
-                takenSource[fSN]=1;
-                humantaskType[f.SN]=1;
-                HumanAction(f.SN,fSN);
+
+        // ---- 4.1 手上已经在干"本任务该干的活" → 不打扰 ----
+        bool handOk = false;
+        if(f.WorkObjectSN >= 0){
+            if(f.WorkObjectSN / 10000 == SORT_BUILDING) handOk = true;   // 在建/在修
+            else for(const tagResource& r : info.resources)
+                if(r.SN == f.WorkObjectSN){
+                    handOk = (t == TASK_FOOD) ? (r.Type == RESOURCE_BUSH || r.Type == RESOURCE_GAZELLE)
+                          : (t == TASK_WOOD) ? (r.Type == RESOURCE_TREE)
+                          : (t == TASK_STONE)? (r.Type == RESOURCE_STONE)
+                          : (t == TASK_GOLD) ? (r.Type == RESOURCE_GOLD) : false;
+                    break;
+                }
+        }
+        if(handOk) continue;
+
+        // ---- 4.2 种田（升级后才有人）----
+        if(t == TASK_FARM){
+            if(info.Wood < BUILD_FARM_WOOD){
+                // 木料不够 → 先去砍木（木头一够，下一拍就会走下面的"种田"分支）
+                int rsn = findNearestResource(info, RESOURCE_TREE, f.DR, f.UR);
+                if(rsn >= 0){ takenSource[rsn] = 1; HumanAction(f.SN, rsn); }
+                continue;
             }
-        }else if(humantask[f.SN]==TASK_WOOD){
-            int resType =  RESOURCE_TREE;
-            int rsn = findNearestResource(info,resType,f.DR,f.UR);
-            if(rsn >= 0){
-                takenSource[rsn]=1;
-                humantaskType[f.SN]=humantask[f.SN];
-                HumanAction(f.SN,rsn);
+            // 木料够 → ① 有种好的空田就去种 ② 否则建一块田
+            int freeFarm = -1; double bestD = 1e18;
+            for(const tagBuilding& b : info.buildings){
+                if(b.Type != BUILDING_FARM || b.Percent < 100) continue;
+                bool used = false;
+                for(const tagFarmer& g : info.farmers)
+                    if(g.WorkObjectSN == b.SN){ used = true; break; }
+                if(used) continue;
+                double dd = calDistance(f.DR, f.UR, b.BlockDR*B, b.BlockUR*B);
+                if(dd < bestD){ bestD = dd; freeFarm = b.SN; }
             }
-        }else if(humantask[f.SN]==TASK_GOLD){
-
-            // 手上已经在采金 → 不打扰
-            bool handIsGold = false;
-            if(f.WorkObjectSN >= 0)
-                for(const tagResource& r : info.resources)
-                    if(r.SN == f.WorkObjectSN){ handIsGold = (r.Type == RESOURCE_GOLD); break; }
-            if(handIsGold) continue;
-
-            if(f.NowState != HUMAN_STATE_IDLE) continue;      // 在忙别的 → 等它空
-
-            int goldSN = findNearestResource(info, RESOURCE_GOLD, f.DR, f.UR);
-            if(goldSN >= 0){
-                takenSource[goldSN] = 1;
-                humantaskType[f.SN] = TASK_GOLD;
-                HumanAction(f.SN, goldSN);
+            if(freeFarm >= 0){ HumanAction(f.SN, freeFarm); continue; }
+            int bd = -1, bu = -1;
+            if(findBuildSite(info, BUILDING_FARM, mycenterDR, mycenterUR, bd, bu)){
+                HumanBuild(f.SN, BUILDING_FARM, bd, bu);
+            }else{
+                // 找不到地基 → 也别站着，去采食/砍木
+                int rsn = findNearestResource(info, RESOURCE_BUSH, f.DR, f.UR);
+                if(rsn < 0) rsn = findNearestResource(info, RESOURCE_TREE, f.DR, f.UR);
+                if(rsn >= 0){ takenSource[rsn] = 1; HumanAction(f.SN, rsn); }
             }
-        }else if(humantask[f.SN]==TASK_STONE){
-            bool handIsStone = false;
-            if(f.WorkObjectSN >= 0)
-                for(const tagResource& r : info.resources)
-                    if(r.SN == f.WorkObjectSN){ handIsStone = (r.Type == RESOURCE_STONE); break; }
-            if(handIsStone) continue;
+            continue;
+        }
 
-            if(f.NowState != HUMAN_STATE_IDLE) continue;      // 在忙别的 → 等它空
+        // ---- 4.3 采集类（食/木/石/金）：找一块"没人采"的资源 ----
+        if(f.NowState != HUMAN_STATE_IDLE) continue;              // 在走过去/在干活 → 别插队
+        int rt = (t == TASK_FOOD)  ? RESOURCE_BUSH  :
+                 (t == TASK_WOOD)  ? RESOURCE_TREE  :
+                 (t == TASK_STONE) ? RESOURCE_STONE : RESOURCE_GOLD;
+        int rsn = findNearestResource(info, rt, f.DR, f.UR);
+        if(rsn < 0 && t == TASK_FOOD)
+            rsn = findNearestResource(info, RESOURCE_GAZELLE, f.DR, f.UR);   // 食物：浆果没了就找羚羊
+        if(rsn >= 0){
+            takenSource[rsn] = 1;
+            humantaskType[f.SN] = t;
+            HumanAction(f.SN, rsn);
 
-            int stoneSN = findNearestResource(info, RESOURCE_STONE, f.DR, f.UR);
-            if(stoneSN  >= 0){
-                takenSource[stoneSN ] = 1;
-                humantaskType[f.SN] = TASK_GOLD;
-                HumanAction(f.SN, stoneSN );
+            // ---- 4.4 这块资源"挺多"且 20 格内没有对应仓库/谷仓 →
+            //          从本任务里派 1 个人去建（建完前不调走，且不占用建筑工）----
+            bool needDepot = false; int bType = BUILDING_STOCK;
+            double rDR = 0, rUR = 0; int rCnt = 0;
+            for(const tagResource& r : info.resources)
+                if(r.SN == rsn){ rDR = r.DR; rUR = r.UR; rCnt = r.Cnt; break; }
+            if(rCnt >= depotRichCnt){
+                bType = (rt == RESOURCE_BUSH) ? BUILDING_GRANARY : BUILDING_STOCK;
+                bool hasNear = false;
+                for(const tagBuilding& b : info.buildings){
+                    if(b.Type != bType) continue;
+                    if(calDistance(b.BlockDR*B, b.BlockUR*B, rDR, rUR) <= depotRange*B){ hasNear = true; break; }
+                }
+                if(!hasNear) needDepot = true;
+            }
+            if(needDepot){
+                bool already = false;
+                for(auto& kv : depotJob) if(kv.second == t){ already = true; break; }   // 本任务已有人在建
+                if(!already){
+                    int bd = -1, bu = -1;
+                    if(findBuildSite(info, bType, (int)(rDR/B), (int)(rUR/B), bd, bu)){
+                        depotJob[f.SN]    = t;                  // ★ 记住原任务
+                        depotJobPos[f.SN] = bd*1000 + bu;
+                        humantask[f.SN]   = t;                  // 名义任务不变
+                        HumanBuild(f.SN, bType, bd, bu);
+                    }
+                }
             }
         }
     }
