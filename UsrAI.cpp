@@ -1,7 +1,9 @@
 #include "UsrAI.h"
+#include<set>
 #include <iostream>
+#include<unordered_map>
+#include<list>
 #include <cstdlib>
-#include<algorithm>
 
 using namespace std;
 tagGame tagUsrGame;
@@ -9,15 +11,139 @@ ins UsrIns;
 /*##########DO NOT MODIFY THE CODE ABOVE##########*/
 
 #include <cmath>
+
+int gameFrame=-1;
+static AI* g_ai = nullptr;                                            // 在 processData() 里赋值
+
+static int    HumanAction   (int SN, int obSN)                       { return g_ai->HumanAction(SN, obSN); }
+static int    HumanMove     (int SN, double dr, double ur)           { return g_ai->HumanMove(SN, dr, ur); }
+static int    HumanBuild    (int SN, int type, int dr, int ur)       { return g_ai->HumanBuild(SN, type, dr, ur); }
+static int    BuildingAction(int SN, int act)                        { return g_ai->BuildingAction(SN, act); }
+static double calDistance   (double a, double b, double c, double d) { return g_ai->calDistance(a, b, c, d); }
+    // manageInit()
+    int mycenterDR = -1, mycenterUR = -1;
+    int enemyDR = -1,    enemyUR = -1;
+    int myarrowDR = -1,  myarrowUR = -1;
+    int myfameDR = -1,   myfameUR = -1;
+    
+    void manageInit(const tagInfo& info);
+
+    // manageProduction();
+    int farmerTarget = 20;
+
+    void manageProduction(const tagInfo& info);
+
+    // manageFarmer()
+    map<int,int> humantask;
+    map<int,int> humantaskType;
+    map<int,int> farmerSN;
+    map<int,int> foodSN;
+    map<int,int> woodSN;
+    map<int,int> stoneSN;
+    map<int,int> goldSN;
+    map<int,int> farmSN;
+    map<int,int> freeSN;
+    map<int,int> takenSource;
+    int buildSN=-1;
+    enum FarmerTask{T0,TASK_FOOD,TASK_WOOD,TASK_STONE,TASK_GOLD,TASK_FARM,TASK_BUILD};
+    int taskTarget[7] = {0,0,0,0,0,0,0};
+    // ===== 任务分组人数（在这里改）=====
+    int wantFood  = 8;      // 采食（浆果+羚羊）
+    int wantWood  = 8;      // 伐木
+    int wantStone = 1;      // 采石
+    int wantGold  = 2;      // 采金
+    int wantBuild = 1;      // 建筑工（不建仓库/谷仓）
+    // ===== 临时建仓库/谷仓 =====
+    map<int,int> depotJob;      // 农民SN -> 原任务
+    map<int,int> depotJobPos;   // 农民SN -> 工地块(dr*1000+ur)
+    int depotRange   = 20;           // 多少格内没有仓库/谷仓才去建
+    int depotRichCnt = 150;          // 资源"挺多"的门槛
+    double enemySafeBlocks = 30.0;
+
+    void manageFarmer(const tagInfo& info); 
+    int findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,int>& takenSource);
+    int findNearestResource(const tagInfo& info,int resType,double dr,double ur);
+    bool findBuildSite(const tagInfo& info, int buildingType,int myDR,int myUR, int& outDR, int& outUR);
+    int buildBuildingSize(int type);
+    bool canBuildHere(const tagInfo &info, int dr, int ur);
+    bool overlapsBuilding(const tagInfo &info, int dr, int ur, int size);
+    bool unitOnSite(const tagInfo &info, int dr, int ur, int size);
+    bool inEnemyZone(double dr, double ur);
+    int countBuilding(const tagInfo& info,int type);
+
+    // manageBuild()
+    int marketTarget = 1;
+    int rangeTarget=3;
+    int homeTarget=5;
+    bool homeup=false;
+    int campTarget = 1;
+    int collageTarget=0;
+    int stableTarget =0;
+    int towerTarget = 3;
+    bool arrowTechOrdered = false;
+    bool needTower = true;
+    double depotRangeBlocks = 20.0;
+
+    void manageBuild(const tagInfo& info);
+
+    // manageResearch()
+    std::set<int> techDone;
+
+    void manageResearch(const tagInfo& info);
+    bool researchIfPossible(const tagInfo &info, int buildingType, int action, int needFood, int needWood, int needStone, int needGold);
+
+    // manageScout()
+    double pointStartDR = -1, pointStartUR = -1;
+    int    pointStartFrame = 0;  
+    enum GamePhase{ PHASE_ECON, PHASE_DEFEND1, PHASE_DEFEND23, PHASE_ATTACK };
+    enum ScoutState{ SCOUT_OUT, SCOUT_RETURN, SCOUT_REST, SCOUT_DONE };  // 加 REST
+    int phase = PHASE_ECON;
+    int scoutState=SCOUT_OUT;
+    double lastPosDR = -1, lastPosUR = -1;   // ← 新增：上次采样位置
+    int    stillCnt  = 0;                    // ← 新增：连续几次没动
+    int priestSN = -1;
+    double lastDR=-1.0,lastUR=-1.0;
+    double scoutTgtDR = -1;
+    double scoutTgtUR = -1;
+    int lastOrderFrame = 0;
+    int homeRestUntil = 0;
+    double lastPDR = -1, lastPUR = -1;   // 上次采样时祭司所在位置（判断有没有真的在挪）
+    int    stuckCnt = 0;                 // 连续多少次采样位置没变
+    
+    int netCur = -1;                 // 当前正在去的网点（-1=没有目标）
+    int netNext = 0;                 // 下一个待处理网点的搜索起点（单调前进）
+    int lastScanFrame = -1000;       // 上次扫敌人的帧
+    bool netReady = false;           // 路点网是否已生成
+    vector<double> netL,netU;
+    vector<double> netDone;
+
+    void manageScout(const tagInfo& info);
+    int getPhase(int &gameFrame);
+    void buildScoutNet(const tagInfo& info);
+
+    // manageArmyKite()
+    bool isArmyReady=false;
+    int wantBowman = 30;
+    void manageArmyKite(const tagInfo& info);
+    // manageAttackKite()
+    void manageAttackKite(const tagInfo& info);
+    // manageDefinse()
+    int towerSN=-1;
+    int convertTarget = -1;
+
+    void manageDefense(const tagInfo& info);
+    // manageUpdate()
+    void manageUpdate(const tagInfo& info);
+
 void UsrAI::processData()
 {   
 //#################################################################################################
+    g_ai = nullptr;  
+    g_ai = this;
     tagInfo info = getInfo();  //本帧快照
     gameFrame = info.GameFrame;
     getPhase(gameFrame);
-    if(gameFrame%25!=0) return;
-
-
+    if(gameFrame%50!=0) return;
 
      //找我方市镇中心\箭塔和对方大概来向
     manageInit(info);
@@ -40,7 +166,7 @@ void UsrAI::processData()
     manageArmyKite(info);
 
     // 反攻
-    manageAttackKite(info);
+    if(isArmyReady) manageAttackKite(info);
 
     // 防御
     if(phase!=PHASE_ECON) manageDefense(info);
@@ -49,7 +175,7 @@ void UsrAI::processData()
     manageUpdate(info);
 }
 
-int UsrAI::getPhase(int& gameFrame){
+int getPhase(int& gameFrame){
     if(gameFrame >= 25000) phase = PHASE_ATTACK;
     else if(gameFrame>=13500) phase=PHASE_DEFEND23;
     else if(gameFrame>=5800) phase=PHASE_DEFEND1;
@@ -57,7 +183,7 @@ int UsrAI::getPhase(int& gameFrame){
     return phase;
 }
 
-void UsrAI::manageInit(const tagInfo& info)
+void manageInit(const tagInfo& info)
 {
    if(mycenterDR < 0 || myarrowDR < 0 || myfameDR < 0){
         for(const tagBuilding& b : info.buildings){
@@ -86,7 +212,7 @@ void UsrAI::manageInit(const tagInfo& info)
 
 
 
-void UsrAI::manageProduction(const tagInfo& info)
+void manageProduction(const tagInfo& info)
 {
     if(info.Human_Num >= info.Human_MaxNum) return;
     if((int)info.farmers.size() >= farmerTarget) return;
@@ -102,9 +228,11 @@ void UsrAI::manageProduction(const tagInfo& info)
 
 
 // 任务号：1食 2木 3石 4金 5田 6建筑工（7=临时建仓库，不写进 humantask，用 depotJob 记）
-void UsrAI::manageFarmer(const tagInfo& info)
+void manageFarmer(const tagInfo& info)
 {
     const double B = BLOCKSIDELENGTH;
+    const double refDR = (mycenterDR >= 0) ? mycenterDR*B : 50*B;   //  找资源一律以市中心为基准
+    const double refUR = (mycenterUR >= 0) ? mycenterUR*B : 50*B;
     takenSource.clear();
 
     // ---------- 0. 死掉的农民清出任务表（注意 erase 的写法）----------
@@ -125,21 +253,27 @@ void UsrAI::manageFarmer(const tagInfo& info)
     }
 
     // ---------- 1. 目标人数：升级前田=0；升级后采食的人整体转种田 ----------
-    const bool bronze = (info.civilizationStage >= CIVILIZATION_BRONZEAGE);
+    int towernn=0;
+    int r=0;
+    for(const tagBuilding& b:info.buildings){
+        if(b.Type==BUILDING_ARROWTOWER) towernn++;
+        else if(b.Type==BUILDING_RANGE) r++;
+    }
+    if(towernn>=3) needTower=false;
+    if(r>=3){
+        homeup=true;
+    }
+    const bool bronze = (r>=3);
     int tFood  = bronze ? 0 : wantFood;
     int tFarm  = bronze ? wantFood : 0;
     int tWood  = wantWood, tStone = wantStone, tGold = wantGold, tBuild = wantBuild;
-    int towernn=0;
-    for(const tagBuilding& b:info.buildings){
-        if(b.Type==BUILDING_ARROWTOWER) towernn++;
-    }
+    
     if(wantFood==8){
         if(towernn*150+info.Wood>=450){
             tStone = 0;
             wantFood+=2;
         }
     }
-    
 
     // ---------- 2. 资源独占：谁正在采哪块，先全部登记（同一块只会有一个人）----------
     for(const tagFarmer& f : info.farmers)
@@ -225,7 +359,8 @@ void UsrAI::manageFarmer(const tagInfo& info)
                     handOk = (t == TASK_FOOD) ? (r.Type == RESOURCE_BUSH || r.Type == RESOURCE_GAZELLE)
                           : (t == TASK_WOOD) ? (r.Type == RESOURCE_TREE)
                           : (t == TASK_STONE)? (r.Type == RESOURCE_STONE)
-                          : (t == TASK_GOLD) ? (r.Type == RESOURCE_GOLD) : false;
+                          : (t == TASK_GOLD) ? (r.Type == RESOURCE_GOLD) 
+                          : (t == TASK_FARM) ? (r.Type == RESOURCE_TREE) : false;
                     break;
                 }
         }
@@ -233,9 +368,10 @@ void UsrAI::manageFarmer(const tagInfo& info)
 
         // ---- 4.2 种田（升级后才有人）----
         if(t == TASK_FARM){
-            if(info.Wood < BUILD_FARM_WOOD){
+            if(info.Wood < BUILD_FARM_WOOD||(info.civilizationStage>=CIVILIZATION_BRONZEAGE&& !techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW))){
+                if(f.NowState != HUMAN_STATE_IDLE) continue;
                 // 木料不够 → 先去砍木（木头一够，下一拍就会走下面的"种田"分支）
-                int rsn = findNearestResource(info, RESOURCE_TREE, f.DR, f.UR);
+                int rsn = findNearestResource(info, RESOURCE_TREE, refDR, refUR);
                 if(rsn >= 0){ takenSource[rsn] = 1; HumanAction(f.SN, rsn); }
                 continue;
             }
@@ -252,12 +388,12 @@ void UsrAI::manageFarmer(const tagInfo& info)
             }
             if(freeFarm >= 0){ HumanAction(f.SN, freeFarm); continue; }
             int bd = -1, bu = -1;
-            if(findBuildSite(info, BUILDING_FARM, mycenterDR, mycenterUR, bd, bu)){
+            if(findBuildSite(info, BUILDING_FARM, myfameDR, myfameUR, bd, bu)){
                 HumanBuild(f.SN, BUILDING_FARM, bd, bu);
             }else{
                 // 找不到地基 → 也别站着，去采食/砍木
-                int rsn = findNearestResource(info, RESOURCE_BUSH, f.DR, f.UR);
-                if(rsn < 0) rsn = findNearestResource(info, RESOURCE_TREE, f.DR, f.UR);
+                int rsn = findNearestResource(info, RESOURCE_BUSH, refDR, refUR);
+                if(rsn < 0) rsn = findNearestResource(info, RESOURCE_TREE, refDR, refUR);
                 if(rsn >= 0){ takenSource[rsn] = 1; HumanAction(f.SN, rsn); }
             }
             continue;
@@ -268,9 +404,9 @@ void UsrAI::manageFarmer(const tagInfo& info)
         int rt = (t == TASK_FOOD)  ? RESOURCE_BUSH  :
                  (t == TASK_WOOD)  ? RESOURCE_TREE  :
                  (t == TASK_STONE) ? RESOURCE_STONE : RESOURCE_GOLD;
-        int rsn = findNearestResource(info, rt, f.DR, f.UR);
+        int rsn = findNearestResource(info, rt, refDR, refUR);
         if(rsn < 0 && t == TASK_FOOD)
-            rsn = findNearestResource(info, RESOURCE_GAZELLE, f.DR, f.UR);   // 食物：浆果没了就找羚羊
+            rsn = findNearestResource(info, RESOURCE_GAZELLE, refDR, refUR);   // 食物：浆果没了就找羚羊
         if(rsn >= 0){
             takenSource[rsn] = 1;
             humantaskType[f.SN] = t;
@@ -279,11 +415,11 @@ void UsrAI::manageFarmer(const tagInfo& info)
             // ---- 4.4 这块资源"挺多"且 20 格内没有对应仓库/谷仓 →
             //          从本任务里派 1 个人去建（建完前不调走，且不占用建筑工）----
             bool needDepot = false; int bType = BUILDING_STOCK;
-            double rDR = 0, rUR = 0; int rCnt = 0;
+            double rDR = 0, rUR = 0; int rCnt = 0; int rType = -1;
             for(const tagResource& r : info.resources)
-                if(r.SN == rsn){ rDR = r.DR; rUR = r.UR; rCnt = r.Cnt; break; }
+                if(r.SN == rsn){ rDR = r.DR; rUR = r.UR; rCnt = r.Cnt; rType = r.Type; break; }
             if(rCnt >= depotRichCnt){
-                bType = (rt == RESOURCE_BUSH) ? BUILDING_GRANARY : BUILDING_STOCK;
+                bType = (rType == RESOURCE_BUSH) ? BUILDING_GRANARY : BUILDING_STOCK;
                 bool hasNear = false;
                 for(const tagBuilding& b : info.buildings){
                     if(b.Type != bType) continue;
@@ -293,7 +429,8 @@ void UsrAI::manageFarmer(const tagInfo& info)
             }
             if(needDepot){
                 bool already = false;
-                for(auto& kv : depotJob) if(kv.second == t){ already = true; break; }   // 本任务已有人在建
+                for(const tagBuilding& b : info.buildings)           //已经有同类型的地基 不重复建
+                    if(b.Type == bType && b.Percent < 100){ already = true; break; }
                 if(!already){
                     int bd = -1, bu = -1;
                     if(findBuildSite(info, bType, (int)(rDR/B), (int)(rUR/B), bd, bu)){
@@ -308,7 +445,7 @@ void UsrAI::manageFarmer(const tagInfo& info)
     }
 }
 
-int UsrAI::findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,int>& takenSource)
+int findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,int>& takenSource)
 {
     int bestSN = -1;
     double bestDis = 1e18;
@@ -324,7 +461,7 @@ int UsrAI::findNearestFood(const tagInfo& info,double dr,double ur,const std::ma
     return bestSN;
 }
 
-int UsrAI::findNearestResource(const tagInfo& info,int resType,double dr,double ur)
+int findNearestResource(const tagInfo& info,int resType,double dr,double ur)
 {
     int bestSN = -1;
     double bestDis = 1e18;
@@ -341,7 +478,7 @@ int UsrAI::findNearestResource(const tagInfo& info,int resType,double dr,double 
     return bestSN;
 }
 
-bool UsrAI::inEnemyZone(double dr, double ur)
+bool inEnemyZone(double dr, double ur)
 {
     if(enemyDR < 0 || enemyUR < 0) return false;      // 还没定位敌人锚点 → 不限制
     double d = calDistance(dr, ur,
@@ -350,7 +487,7 @@ bool UsrAI::inEnemyZone(double dr, double ur)
     return d <= enemySafeBlocks * BLOCKSIDELENGTH;
 }
 
-int UsrAI::countBuilding(const tagInfo& info,int type)
+int countBuilding(const tagInfo& info,int type)
 {
     int cnt = 0;
     for(const tagBuilding& b : info.buildings){
@@ -359,7 +496,7 @@ int UsrAI::countBuilding(const tagInfo& info,int type)
     return cnt;
 }
 
-bool UsrAI::findBuildSite(const tagInfo& info, int buildingType,int myDR,int myUR, int& outDR, int& outUR)
+bool findBuildSite(const tagInfo& info, int buildingType,int myDR,int myUR, int& outDR, int& outUR)
 {
     int size = buildBuildingSize(buildingType);
     int probeDR = -1,probeUR = -1;
@@ -384,13 +521,13 @@ bool UsrAI::findBuildSite(const tagInfo& info, int buildingType,int myDR,int myU
     return false;        
 }
 
-int UsrAI::buildBuildingSize(int type)
+int buildBuildingSize(int type)
 {
     if(type == BUILDING_HOME || type == BUILDING_ARROWTOWER) return 2;
     return 3;
 }
 
-bool UsrAI::canBuildHere(const tagInfo& info,int dr,int ur)
+bool canBuildHere(const tagInfo& info,int dr,int ur)
 {
     if(info.theMap == nullptr) return false;
     auto x = info.theMap->size();
@@ -406,7 +543,7 @@ bool UsrAI::canBuildHere(const tagInfo& info,int dr,int ur)
     return true;
 }
 
-bool UsrAI::overlapsBuilding(const tagInfo& info, int dr, int ur, int size)
+bool overlapsBuilding(const tagInfo& info, int dr, int ur, int size)
 {
     int candL = dr - 1, candR = dr + size;      // 候选 +1圈：[dr-1, dr+size)
     int candD = ur - 1, candU = ur + size;
@@ -424,7 +561,7 @@ bool UsrAI::overlapsBuilding(const tagInfo& info, int dr, int ur, int size)
     return false;
 }
 
-bool UsrAI::unitOnSite(const tagInfo& info, int dr, int ur, int size)
+bool unitOnSite(const tagInfo& info, int dr, int ur, int size)
 {
     for(const tagFarmer& f : info.farmers){
         int bdr = (int)(f.DR / BLOCKSIDELENGTH);
@@ -446,14 +583,22 @@ bool UsrAI::unitOnSite(const tagInfo& info, int dr, int ur, int size)
 
 
 
-void UsrAI::manageBuild(const tagInfo& info)
+void manageBuild(const tagInfo& info)
 {
+    if(buildSN >= 0){
+        int hisWork = -1;
+        for(const tagFarmer& f : info.farmers)
+            if(f.SN == buildSN){ hisWork = f.WorkObjectSN; break; }
+        if(hisWork >= 0)
+            for(const tagBuilding& b : info.buildings)
+                if(b.SN == hisWork && b.Percent < 100) return;      // 正在建 → 一个字都不下
+    }
     // 建造优先级：房 -> 市民 -> 兵营 -> 箭塔
     int wantType = -1;
     if(countBuilding(info,BUILDING_HOME) < homeTarget) wantType = BUILDING_HOME;
     else if(countBuilding(info,BUILDING_MARKET) < marketTarget) wantType = BUILDING_MARKET;
     else if(countBuilding(info,BUILDING_ARMYCAMP) < campTarget) wantType = BUILDING_ARMYCAMP;
-    else if(countBuilding(info, BUILDING_ARROWTOWER) < towerTarget){
+    else if(needTower&& countBuilding(info, BUILDING_ARROWTOWER) < towerTarget){
         // 箭塔科技判断
         bool arrowTechReady = arrowTechOrdered;
         if(arrowTechReady){
@@ -514,21 +659,19 @@ void UsrAI::manageBuild(const tagInfo& info)
     }
 }
 
-void UsrAI::manageResearch(const tagInfo& info){
-    // ① 观察：任何"正在研发中"的动作都记下来（Project 就是当前动作）→ 之后不再重复下令
+void manageResearch(const tagInfo& info){
     for(const tagBuilding& b : info.buildings){
-        if(b.Project != ACT_NULL){
-            switch(b.Project){
-                case BUILDING_GRANARY_ARROWTOWER:
-                case BUILDING_RANGE_UPGRADE_COMPOSITE_BOW:
-                case BUILDING_MARKET_WOOD_UPGRADE:
-                case BUILDING_MARKET_CRAFT_UPGRADE:
-                case BUILDING_STOCK_UPGRADE_USETOOL:
-                case BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER:
-                case BUILDING_MARKET_FARM_UPGRADE:
-                    techDone.insert(b.Project); break;      // 造兵/造农民/升时代不记
-                default: break;
-            }
+        if(b.Project == ACT_NULL) continue;
+        switch(b.Project){
+            case BUILDING_GRANARY_ARROWTOWER:
+            case BUILDING_RANGE_UPGRADE_COMPOSITE_BOW:
+            case BUILDING_MARKET_WOOD_UPGRADE:
+            case BUILDING_MARKET_CRAFT_UPGRADE:
+            case BUILDING_STOCK_UPGRADE_USETOOL:
+            case BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER:
+            case BUILDING_MARKET_FARM_UPGRADE:
+                techDone.insert(b.Project); break;      // 造兵/造农民/升时代不记
+            default: break;
         }
     }
     if(!arrowTechOrdered && techDone.count(BUILDING_GRANARY_ARROWTOWER)) arrowTechOrdered = true;   // 真开始研发了才算数
@@ -550,7 +693,7 @@ void UsrAI::manageResearch(const tagInfo& info){
     }
 }
 
-bool UsrAI::researchIfPossible(const tagInfo& info,int buildingType,int action,
+bool researchIfPossible(const tagInfo& info,int buildingType,int action,
          int needFood,int needWood,int needStone,int needGold)
 {
             if(techDone.count(action)) return true;          // 已研发/在研发 → 不重复下令
@@ -565,7 +708,7 @@ bool UsrAI::researchIfPossible(const tagInfo& info,int buildingType,int action,
             return false;         
 }
 
-void UsrAI::manageScout(const tagInfo& info)
+void manageScout(const tagInfo& info)
 {
     const double B = BLOCKSIDELENGTH;
     const double hx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * B;
@@ -650,13 +793,6 @@ void UsrAI::manageScout(const tagInfo& info)
     if(fabs(pdr - lastPosDR) < 0.5 && fabs(pur - lastPosUR) < 0.5) stillCnt++;
     else { stillCnt = 0; lastPosDR = pdr; lastPosUR = pur; }
 
-    std::cerr << "[net] f=" << gameFrame << " pts=" << NP
-              << " cur=" << netCur << " next=" << netNext
-              << " tgt=(" << scoutTgtDR/B << "," << scoutTgtUR/B << ")"
-              << " pos=(" << pdr/B << "," << pur/B << ")"
-              << " dw=" << (scoutTgtDR>=0 ? calDistance(pdr,pur,scoutTgtDR,scoutTgtUR)/B : -1)
-              << "B still=" << stillCnt << " state=" << scoutState << std::endl;
-
     // 换点判据：只有 ①到达 ②真的没动
     if(scoutTgtDR >= 0){
         double dw = calDistance(pdr, pur, scoutTgtDR, scoutTgtUR);
@@ -696,7 +832,7 @@ void UsrAI::manageScout(const tagInfo& info)
     }
 }
 
-void UsrAI::buildScoutNet(const tagInfo& info)
+void buildScoutNet(const tagInfo& info)
 {
     netL.clear(); netU.clear(); netDone.clear();
     netCur = -1; netNext = 0; netReady = false;
@@ -747,9 +883,8 @@ void UsrAI::buildScoutNet(const tagInfo& info)
 
     netDone.assign(netL.size(), 0);
     netReady = true;
-    std::cerr << "[net-build] snake pts=" << netL.size() << " cols=" << keptCol << " step=" << step << std::endl;
 }
-void UsrAI::manageArmyKite(const tagInfo &info)
+void manageArmyKite(const tagInfo &info)
 {
     int nBow = 0, nThrow = 0;
     for(const tagArmy& a : info.armies){
@@ -757,20 +892,24 @@ void UsrAI::manageArmyKite(const tagInfo &info)
         else if(a.Sort == AT_STONE_THROWER) nThrow++;
     }
     // 兵种清洗：留复合弓兵 / 投石车 / 祭司，其余自杀
-    if(techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW)){
+    if(techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW)&&info.armies.size()>15){
+        
         for(const tagArmy& a : info.armies){
             if(a.SN == priestSN) continue;
             if(a.Sort == AT_COMPOSITE_BOWMAN || a.Sort == AT_STONE_THROWER) continue;
-            HumanAction(a.SN, a.SN);                                     // 自家单位互指 = 自毁
+            HumanAction(a.SN, a.SN);                                     // 自毁
         }
     }
     if(!isArmyReady && nBow+nThrow >= wantBowman-10) isArmyReady = true;           // 弓兵成型 → 转入反攻
     // 科技：复合弓（180 食 + 100 木）
-    if(nBow < wantBowman)
+    if(nBow < wantBowman&&info.civilizationStage>=CIVILIZATION_BRONZEAGE)
         researchIfPossible(info, BUILDING_RANGE, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, 180, 100, 0, 0);
+    bool researchingBow = false;
+    for(const tagBuilding& b : info.buildings)
+        if(b.Project == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) researchingBow = true;
+    if(researchingBow) return;    
     if(!techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW)) return;
-    int homenum = countBuilding(info, BUILDING_HOME);                    // 房子不够先别造
-    if(homenum*4 <= nBow + nThrow+20) return;
+    homeTarget=13;
     // 造复合弓兵（40 食 + 20 金）
     if(nBow+nThrow <30 
        && info.Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD
@@ -784,7 +923,7 @@ void UsrAI::manageArmyKite(const tagInfo &info)
     }
 }
 
-void UsrAI::manageAttackKite(const tagInfo &info)
+void manageAttackKite(const tagInfo &info)
 {
     if(!isArmyReady) return;
     const double B = BLOCKSIDELENGTH;
@@ -842,7 +981,7 @@ void UsrAI::manageAttackKite(const tagInfo &info)
     }
 }
 
-void UsrAI::manageDefense(const tagInfo &info)
+void manageDefense(const tagInfo &info)
 {
     double hx, hy;
     for(const tagArmy& a : info.armies){
@@ -958,10 +1097,16 @@ void UsrAI::manageDefense(const tagInfo &info)
             const double B    = BLOCKSIDELENGTH;
             const double KEEP = double(DIS_STONE_THROWER) - 1.0;  // 想保持 9 格（射程 10）
             const double PULL = KEEP - 3.0;                       // 敌人进到 6 格内 → 开始往后拉
-            if(eSN >= 0 && eD <= PULL*B){
-                double rx, ry;                                // ① 被贴死 → 撤回自家角
-                rx = mycenterDR*B + B/2;
-                ry = mycenterUR*B + B/2;
+            if(eSN >= 0 && eD <= PULL*B ){
+                double rx, ry;                              
+                if(calDistance(a.DR,a.UR,mycenterDR*B,mycenterUR*B)>5*B){
+                    rx = mycenterDR*B + B/2;
+                    ry = mycenterUR*B + B/2;
+                }else{
+                    rx = enemyDR*B;
+                    ry = enemyUR*B;
+                }
+                
                 HumanMove(a.SN, rx, ry);
                 continue;                                         // 这一拍不派攻击目标
             }
@@ -998,7 +1143,7 @@ void UsrAI::manageDefense(const tagInfo &info)
         }
     }
 }
-void UsrAI::manageUpdate(const tagInfo &info)
+void manageUpdate(const tagInfo &info)
 { 
     if(info.civilizationStage < CIVILIZATION_BRONZEAGE && info.Meat >=810){
         for(const tagBuilding& b : info.buildings){
