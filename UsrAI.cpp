@@ -227,7 +227,6 @@ void manageProduction(const tagInfo& info)
 
 
 
-// 任务号：1食 2木 3石 4金 5田 6建筑工（7=临时建仓库，不写进 humantask，用 depotJob 记）
 void manageFarmer(const tagInfo& info)
 {
     const double B = BLOCKSIDELENGTH;
@@ -303,7 +302,7 @@ void manageFarmer(const tagInfo& info)
 
     }
     // 3b. 缺编 → 用空闲的人补（顺序：金→石→木→食→田）
-    static const int prio[6] = { TASK_BUILD, TASK_STONE, TASK_FOOD, TASK_GOLD, TASK_WOOD, TASK_FARM };
+    static const int prio[6] = { TASK_BUILD, TASK_FOOD,TASK_STONE, TASK_WOOD, TASK_GOLD,TASK_FARM };
     for(int k = 0; k < 6; k++){
         int t = prio[k];
         while(cnt[t] < tgt[t]){
@@ -428,10 +427,11 @@ void manageFarmer(const tagInfo& info)
                 if(!hasNear) needDepot = true;
             }
             if(needDepot){
+                int depotWood = (bType == BUILDING_GRANARY) ? BUILD_GRANARY_WOOD : BUILD_STOCK_WOOD;
                 bool already = false;
                 for(const tagBuilding& b : info.buildings)           //已经有同类型的地基 不重复建
                     if(b.Type == bType && b.Percent < 100){ already = true; break; }
-                if(!already){
+                if(!already && info.Wood >= depotWood){               // ★ 木头不够就什么都不做 → 他继续采
                     int bd = -1, bu = -1;
                     if(findBuildSite(info, bType, (int)(rDR/B), (int)(rUR/B), bd, bu)){
                         depotJob[f.SN]    = t;                  // ★ 记住原任务
@@ -839,6 +839,7 @@ void buildScoutNet(const tagInfo& info)
     if(info.theMap == nullptr || mycenterDR < 0 || enemyDR < 0) return;
 
     const int step   = 5;        // ★ 5 格一个点（比 6 密，推进更快）
+    const int stepL  = 15;
     const int margin = 3;
 
     const double A    = double(enemyDR - mycenterDR);
@@ -850,9 +851,9 @@ void buildScoutNet(const tagInfo& info)
     // ===== 一条龙：逐列收集 → 奇偶列反向 → 拼成一条连续路径 =====
     vector<double> tmpL, tmpU;
     int keptCol = 0;                                   // 只数"真的有保留点的列"
-    for(int l = margin; l < MAP_L - margin; l += step){
+    for(int l = margin; l < MAP_L - margin; l += stepL){
         vector<int> us;
-        for(int u = margin; u < MAP_U - margin; u += step){
+        for(int u = margin; u < MAP_U - margin; u += stepL){
             if(DLEN > 1e-9 && (A*l + Bv*u - K) > 0) continue;   // 只留我方半边
             us.push_back(u);
         }
@@ -946,6 +947,12 @@ void manageAttackKite(const tagInfo &info)
             if(p.WorkObjectSN!=siegeSN){
                 HumanAction(priestSN,siegeSN);
             }
+            break;
+        }
+    }else if(info.enemy_armies.empty()&&siegeSN<0){
+        for(const tagArmy& p:info.armies){
+            if(p.SN != priestSN) continue;
+            if(p.WorkObjectSN<0) HumanMove(p.SN,enemyDR*B,enemyUR*B);
             break;
         }
     }
