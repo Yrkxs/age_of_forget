@@ -49,9 +49,9 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     int taskTarget[7] = {0,0,0,0,0,0,0};
     // ===== 任务分组人数（在这里改）=====
     int wantFood  = 8;      // 采食（浆果+羚羊）
-    int wantWood  = 8;      // 伐木
+    int wantWood  = 7;      // 伐木
     int wantStone = 1;      // 采石
-    int wantGold  = 2;      // 采金
+    int wantGold  = 3;      // 采金
     int wantBuild = 1;      // 建筑工（不建仓库/谷仓）
     // ===== 临时建仓库/谷仓 =====
     map<int,int> depotJob;      // 农民SN -> 原任务
@@ -143,7 +143,7 @@ void UsrAI::processData()
     tagInfo info = getInfo();  //本帧快照
     gameFrame = info.GameFrame;
     getPhase(gameFrame);
-    if(gameFrame%50!=0) return;
+    if(gameFrame%25!=0) return;
 
      //找我方市镇中心\箭塔和对方大概来向
     manageInit(info);
@@ -768,26 +768,31 @@ void manageScout(const tagInfo& info)
     const int NP = (int)netL.size();
     if((int)netDone.size() < NP) netDone.assign(NP, 0);
 
-    if(gameFrame - lastScanFrame >= 25){                // 敌人 25 格内 → 拉黑
-        lastScanFrame = gameFrame;
-        for(const tagArmy& e : info.enemy_armies){
-            if(e.Blood <= 0) continue;
-            double edr = e.DR / B, eur = e.UR / B;
-            for(int i = 0; i < NP; i++)
-                if(!netDone[i] && calDistance(netL[i], netU[i], edr, eur) < 25) netDone[i] = 1;
-        }
-    }
-    if(scoutTgtDR >= 0 && netCur >= 0 && netCur < NP && netDone[netCur]){
-        scoutTgtDR = -1; scoutTgtUR = -1;
-        stillCnt = 0;
-        std::cerr << "[net] 当前点被敌人拉黑，切下一个 (cur=" << netCur << ")" << std::endl;
-    }
+    // ===== 先定位祭司（危险判断要用他自己的位置）=====
     double pdr = -1, pur = -1; bool got = false;
     for(const tagArmy& p : info.armies){
         if(p.SN != priestSN) continue;
         pdr = p.DR; pur = p.UR; got = true; break;
     }
     if(!got) return;
+
+    // ===== 看到敌人：①拉黑敌人周围路点 ②祭司自己被逼近就当场丢目标 =====
+    const double BLACK_R  = 25.0;        // 敌人周围 25 格内的路点作废（单位：格）
+    const double DANGER_R = 14.0 * B;    // 敌人在祭司 14 格内 = 危险（世界坐标）
+    bool danger = false;
+    for(const tagArmy& e : info.enemy_armies){
+        if(e.Blood <= 0) continue;
+        const double edr = e.DR / B, eur = e.UR / B;
+        for(int i = 0; i < NP; i++)
+            if(!netDone[i] && calDistance(netL[i], netU[i], edr, eur) < BLACK_R) netDone[i] = 1;
+        if(calDistance(pdr, pur, e.DR, e.UR) < DANGER_R) danger = true;
+    }
+    if(danger && scoutTgtDR >= 0){                     // ★ 一看到就规避：马上放弃当前点
+        scoutTgtDR = -1; scoutTgtUR = -1; stillCnt = 0;
+    }
+    if(scoutTgtDR >= 0 && netCur >= 0 && netCur < NP && netDone[netCur]){
+        scoutTgtDR = -1; scoutTgtUR = -1; stillCnt = 0;   // 目标点本身被拉黑（原有逻辑）
+    }
 
     // 卡住检测：只看"位置有没有变"，与时间无关
     if(fabs(pdr - lastPosDR) < 0.5 && fabs(pur - lastPosUR) < 0.5) stillCnt++;
@@ -838,50 +843,45 @@ void buildScoutNet(const tagInfo& info)
     netCur = -1; netNext = 0; netReady = false;
     if(info.theMap == nullptr || mycenterDR < 0 || enemyDR < 0) return;
 
-    const int step   = 5;        // ★ 5 格一个点（比 6 密，推进更快）
-    const int stepL  = 15;
-    const int margin = 3;
+    const double STEP = 10.0;        // ★ 每 10 格一个路点
 
-    const double A    = double(enemyDR - mycenterDR);
-    const double Bv   = double(enemyUR - mycenterUR);
-    const double K    = ((double)enemyDR*enemyDR + (double)enemyUR*enemyUR
-                       - (double)mycenterDR*mycenterDR - (double)mycenterUR*mycenterUR) / 2.0;
-    const double DLEN = sqrt(A*A + Bv*Bv);
+    // 自家角 = 离基地最近的地图角；"上方角" = 同一条边另一头；"对角" = 两个坐标都翻过去
+    const double E = 10.0;                                       // ★ 离地图边缘 10 格
+    const int cx = (mycenterDR * 2 >= MAP_L) ? 1 : 0;
+    const int cy = (mycenterUR * 2 >= MAP_U) ? 1 : 0;
+    const double p0L = cx ? (MAP_L - 1 - E) : E;                 // ① 自家角
+    const double p0U = cy ? (MAP_U - 1 - E) : E;
+    const double p1L = p0L;                                      // ② 自家上方的角
+    const double p1U = cy ? E : (MAP_U - 1 - E);
+    const double p2L = cx ? E : (MAP_L - 1 - E);                 // ③ 上方角的对角
+    const double p2U = p0U;
+    const double p4L = (mycenterDR + MAP_L / 2.0) / 2.0;         // ④ 自家与地图中心的中点
+    const double p4U = (mycenterUR + MAP_U / 2.0) / 2.0;
+    const double lo = 2.0;
+    auto clampL = [&](double v){ return v < lo ? lo : (v > MAP_L - 3.0 ? MAP_L - 3.0 : v); };
+    auto clampU = [&](double v){ return v < lo ? lo : (v > MAP_U - 3.0 ? MAP_U - 3.0 : v); };
 
-    // ===== 一条龙：逐列收集 → 奇偶列反向 → 拼成一条连续路径 =====
-    vector<double> tmpL, tmpU;
-    int keptCol = 0;                                   // 只数"真的有保留点的列"
-    for(int l = margin; l < MAP_L - margin; l += stepL){
-        vector<int> us;
-        for(int u = margin; u < MAP_U - margin; u += stepL){
-            if(DLEN > 1e-9 && (A*l + Bv*u - K) > 0) continue;   // 只留我方半边
-            us.push_back(u);
+    // 沿一条线段每 STEP 格撒一个点；withEnd=false 时不含终点（避免和下一段起点重复）
+    auto addSeg = [&](double l0, double u0, double l1, double u1, bool withEnd){
+        const double dl = l1 - l0, du = u1 - u0;
+        const double len = sqrt(dl*dl + du*du);
+        if(len < 1e-6) return;
+        int n = (int)(len / STEP + 0.5);
+        if(n < 1) n = 1;
+        for(int i = 0; i <= n; i++){
+            if(i == n && !withEnd) break;
+            const double t = double(i) / double(n);
+            netL.push_back(clampL(l0 + dl*t));
+            netU.push_back(clampU(u0 + du*t));
         }
-        if(us.empty()) continue;
-        if(keptCol % 2 == 1) reverse(us.begin(), us.end());      // ★ 蛇形：相邻两列首尾相接
-        for(size_t i = 0; i < us.size(); i++){
-            tmpL.push_back(double(l));
-            tmpU.push_back(double(us[i]));
-        }
-        keptCol++;
-    }
-    if(tmpL.empty()) return;
+    };
 
-    // 起点 = 离基地最近的那个点（旋转后"接缝"落在最远端，路径依旧连续）
-    int start = 0; double bestD = 1e18;
-    for(size_t i = 0; i < tmpL.size(); i++){
-        double dd = (tmpL[i]-mycenterDR)*(tmpL[i]-mycenterDR)
-                  + (tmpU[i]-mycenterUR)*(tmpU[i]-mycenterUR);
-        if(dd < bestD){ bestD = dd; start = (int)i; }
-    }
-    for(size_t k = 0; k < tmpL.size(); k++){
-        int i = (start + (int)k) % (int)tmpL.size();
-        netL.push_back(tmpL[i]);
-        netU.push_back(tmpU[i]);
-    }
-    netL.push_back(mycenterDR);
-    netU.push_back(mycenterUR);
+    addSeg(p0L, p0U, p1L, p1U, false);   // ① 自家角 → 自家上方的角
+    addSeg(p1L, p1U, p2L, p2U, false);   // ② 上方角 → 上方角的对角（跨全场的斜线）
+    addSeg(p2L, p2U, p0L, p0U, false);   // ③ 对角 → 回到自家角
+    addSeg(p0L, p0U, p4L, p4U, true);    // ④ 自家角 → 自家与地图中心的中点（含终点）
 
+    if(netL.empty()) return;
     netDone.assign(netL.size(), 0);
     netReady = true;
 }
@@ -901,7 +901,7 @@ void manageArmyKite(const tagInfo &info)
             HumanAction(a.SN, a.SN);                                     // 自毁
         }
     }
-    if(!isArmyReady && nBow+nThrow >= wantBowman-10) isArmyReady = true;           // 弓兵成型 → 转入反攻
+    if(!isArmyReady && nBow+nThrow >= wantBowman-15) isArmyReady = true;           // 弓兵成型 → 转入反攻
     // 科技：复合弓（180 食 + 100 木）
     if(nBow < wantBowman&&info.civilizationStage>=CIVILIZATION_BRONZEAGE)
         researchIfPossible(info, BUILDING_RANGE, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, 180, 100, 0, 0);
@@ -949,10 +949,10 @@ void manageAttackKite(const tagInfo &info)
             }
             break;
         }
-    }else if(info.enemy_armies.empty()&&siegeSN<0){
+    }else{
         for(const tagArmy& p:info.armies){
             if(p.SN != priestSN) continue;
-            if(p.WorkObjectSN<0) HumanMove(p.SN,enemyDR*B,enemyUR*B);
+            if(p.WorkObjectSN<0) HumanMove(p.SN,50*B,50*B);
             break;
         }
     }
