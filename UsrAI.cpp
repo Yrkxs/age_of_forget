@@ -21,6 +21,7 @@ static int    HumanBuild    (int SN, int type, int dr, int ur)       { return g_
 static int    BuildingAction(int SN, int act)                        { return g_ai->BuildingAction(SN, act); }
 static double calDistance   (double a, double b, double c, double d) { return g_ai->calDistance(a, b, c, d); }
     // manageInit()
+    int frame=1;
     int mycenterDR = -1, mycenterUR = -1;
     int enemyDR = -1,    enemyUR = -1;
     int myarrowDR = -1,  myarrowUR = -1;
@@ -87,7 +88,7 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     void manageBuild(const tagInfo& info);
 
     // manageResearch()
-    std::set<int> techDone;
+    //std::set<int> techDone;
 
     void manageResearch(const tagInfo& info);
     bool researchIfPossible(const tagInfo &info, int buildingType, int action, int needFood, int needWood, int needStone, int needGold);
@@ -143,7 +144,10 @@ void UsrAI::processData()
     tagInfo info = getInfo();  //本帧快照
     gameFrame = info.GameFrame;
     getPhase(gameFrame);
-    if(gameFrame%25!=0) return;
+    frame++;
+
+    if(frame%15!=0) return;
+    else frame=1; 
 
      //找我方市镇中心\箭塔和对方大概来向
     manageInit(info);
@@ -367,7 +371,7 @@ void manageFarmer(const tagInfo& info)
 
         // ---- 4.2 种田（升级后才有人）----
         if(t == TASK_FARM){
-            if(info.Wood < BUILD_FARM_WOOD||(info.civilizationStage>=CIVILIZATION_BRONZEAGE&& !techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW))){
+            if(info.Wood < BUILD_FARM_WOOD+100){
                 if(f.NowState != HUMAN_STATE_IDLE) continue;
                 // 木料不够 → 先去砍木（木头一够，下一拍就会走下面的"种田"分支）
                 int rsn = findNearestResource(info, RESOURCE_TREE, refDR, refUR);
@@ -595,7 +599,7 @@ void manageBuild(const tagInfo& info)
     }
     // 建造优先级：房 -> 市民 -> 兵营 -> 箭塔
     int wantType = -1;
-    if(countBuilding(info,BUILDING_HOME) < homeTarget) wantType = BUILDING_HOME;
+    if(countBuilding(info,BUILDING_HOME) < 5) wantType = BUILDING_HOME;
     else if(countBuilding(info,BUILDING_MARKET) < marketTarget) wantType = BUILDING_MARKET;
     else if(countBuilding(info,BUILDING_ARMYCAMP) < campTarget) wantType = BUILDING_ARMYCAMP;
     else if(needTower&& countBuilding(info, BUILDING_ARROWTOWER) < towerTarget){
@@ -612,7 +616,7 @@ void manageBuild(const tagInfo& info)
     }else if(countBuilding(info,BUILDING_STABLE) < stableTarget) wantType = BUILDING_STABLE;
     else if(countBuilding(info,BUILDING_RANGE) < rangeTarget) wantType = BUILDING_RANGE;
     else if(countBuilding(info,BUILDING_COLLAGE)<collageTarget&&info.civilizationStage>=CIVILIZATION_BRONZEAGE) wantType = BUILDING_COLLAGE;
-    
+    else if(countBuilding(info,BUILDING_HOME) < 13) wantType = BUILDING_HOME;
     if(wantType >=0){
         int buildDR = -1;
         int buildUR = -1;
@@ -660,7 +664,7 @@ void manageBuild(const tagInfo& info)
 }
 
 void manageResearch(const tagInfo& info){
-    for(const tagBuilding& b : info.buildings){
+    /*for(const tagBuilding& b : info.buildings){
         if(b.Project == ACT_NULL) continue;
         switch(b.Project){
             case BUILDING_GRANARY_ARROWTOWER:
@@ -673,8 +677,8 @@ void manageResearch(const tagInfo& info){
                 techDone.insert(b.Project); break;      // 造兵/造农民/升时代不记
             default: break;
         }
-    }
-    if(!arrowTechOrdered && techDone.count(BUILDING_GRANARY_ARROWTOWER)) arrowTechOrdered = true;   // 真开始研发了才算数
+    }*/
+    if(!arrowTechOrdered) arrowTechOrdered = true;   // 真开始研发了才算数
 
     // ③ 经济科技
     researchIfPossible(info,BUILDING_MARKET ,BUILDING_MARKET_WOOD_UPGRADE   ,120, 75,0,0);  // 伐木：采集+50%
@@ -686,17 +690,16 @@ void manageResearch(const tagInfo& info){
     if(armyStage)
         researchIfPossible(info,BUILDING_RANGE,BUILDING_RANGE_UPGRADE_COMPOSITE_BOW,180,100,0,0);
         // ===== 复合弓兵增益：射程 +1/+1、弓兵护甲 +2/+2 =====
-    if(techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) > 0){
+    //if(techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) > 0){
         researchIfPossible(info,BUILDING_MARKET,BUILDING_MARKET_WOOD_UPGRADE ,120, 75,0,0);  // 射程+1
         researchIfPossible(info,BUILDING_MARKET,BUILDING_MARKET_CRAFT_UPGRADE,170,150,0,0); // 射程再+1（需伐木加工）
         researchIfPossible(info,BUILDING_STOCK ,BUILDING_STOCK_UPGRADE_DEFENSE_ARCHER,100,0,0,0); // 护甲+2
-    }
+    //}
 }
 
 bool researchIfPossible(const tagInfo& info,int buildingType,int action,
          int needFood,int needWood,int needStone,int needGold)
 {
-            if(techDone.count(action)) return true;          // 已研发/在研发 → 不重复下令
             if(info.Meat < needFood || info.Wood < needWood || info.Stone < needStone
                || info.Gold < needGold) return false;
             for(const tagBuilding& b : info.buildings){
@@ -893,7 +896,7 @@ void manageArmyKite(const tagInfo &info)
         else if(a.Sort == AT_STONE_THROWER) nThrow++;
     }
     // 兵种清洗：留复合弓兵 / 投石车 / 祭司，其余自杀
-    if(techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW)&&info.armies.size()>15){
+    if(info.armies.size()>10){
         
         for(const tagArmy& a : info.armies){
             if(a.SN == priestSN) continue;
@@ -905,11 +908,6 @@ void manageArmyKite(const tagInfo &info)
     // 科技：复合弓（180 食 + 100 木）
     if(nBow < wantBowman&&info.civilizationStage>=CIVILIZATION_BRONZEAGE)
         researchIfPossible(info, BUILDING_RANGE, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, 180, 100, 0, 0);
-    bool researchingBow = false;
-    for(const tagBuilding& b : info.buildings)
-        if(b.Project == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) researchingBow = true;
-    if(researchingBow) return;    
-    if(!techDone.count(BUILDING_RANGE_UPGRADE_COMPOSITE_BOW)) return;
     homeTarget=13;
     // 造复合弓兵（40 食 + 20 金）
     if(nBow+nThrow <30 
@@ -940,7 +938,7 @@ void manageAttackKite(const tagInfo &info)
         double d = calDistance(b.BlockDR, b.BlockUR, mycenterDR, mycenterUR);
         if(d < bestTd){ bestTd = d; etowerSN = b.SN; etowerBL = b.BlockDR; etowerBU = b.BlockUR; }
     }
-    if(info.enemy_armies.empty()&&siegeSN>=0){
+    if(info.enemy_armies.empty()&&siegeSN>=0&&etowerNum<=3){
         for(const tagArmy& p:info.armies){
             if(p.SN != priestSN) continue;
             if(p.ConvertCooldown>0) break;
@@ -952,7 +950,7 @@ void manageAttackKite(const tagInfo &info)
     }else{
         for(const tagArmy& p:info.armies){
             if(p.SN != priestSN) continue;
-            if(p.WorkObjectSN<0) HumanMove(p.SN,50*B,50*B);
+            HumanMove(p.SN,50*B,50*B);
             break;
         }
     }
@@ -990,6 +988,7 @@ void manageAttackKite(const tagInfo &info)
 
 void manageDefense(const tagInfo &info)
 {
+    if(info.GameFrame>25000&&isArmyReady) return;
     double hx, hy;
     for(const tagArmy& a : info.armies){
         if(a.Sort == AT_PRIEST){
