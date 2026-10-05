@@ -20,8 +20,11 @@ static int    HumanMove     (int SN, double dr, double ur)           { return g_
 static int    HumanBuild    (int SN, int type, int dr, int ur)       { return g_ai->HumanBuild(SN, type, dr, ur); }
 static int    BuildingAction(int SN, int act)                        { return g_ai->BuildingAction(SN, act); }
 static double calDistance   (double a, double b, double c, double d) { return g_ai->calDistance(a, b, c, d); }
+
     // manageInit()
-    int frame=1;
+    int lastframe15=1;
+    int lastframe25=1;
+    int lastframe50=1;
     int mycenterDR = -1, mycenterUR = -1;
     int enemyDR = -1,    enemyUR = -1;
     int myarrowDR = -1,  myarrowUR = -1;
@@ -51,9 +54,10 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     // ===== 任务分组人数（在这里改）=====
     int wantFood  = 8;      // 采食（浆果+羚羊）
     int wantWood  = 7;      // 伐木
-    int wantStone = 1;      // 采石
-    int wantGold  = 3;      // 采金
+    int wantStone = 2;      // 采石
+    int wantGold  = 2;      // 采金
     int wantBuild = 1;      // 建筑工（不建仓库/谷仓）
+    bool farmTaken = false;  // 是否已经派人去种田（不设种田组；食物组里只要木头够就抽 1 个人去种）
     // ===== 临时建仓库/谷仓 =====
     map<int,int> depotJob;      // 农民SN -> 原任务
     map<int,int> depotJobPos;   // 农民SN -> 工地块(dr*1000+ur)
@@ -74,7 +78,7 @@ static double calDistance   (double a, double b, double c, double d) { return g_
 
     // manageBuild()
     int marketTarget = 1;
-    int rangeTarget=3;
+    int rangeTarget=1;
     int homeTarget=5;
     bool homeup=false;
     int campTarget = 1;
@@ -136,6 +140,80 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     // manageUpdate()
     void manageUpdate(const tagInfo& info);
 
+
+// ===== 调试打印：这一拍干了什么 =====
+static void DbgAct(const char* what, int buildSN, int act){
+    
+    std::cerr << "[do] f=" << gameFrame << "  " << what
+              << "  建筑SN=" << buildSN << "  动作号=" << act << std::endl;
+    
+}
+static void DbgBuild(const char* what, int farmerSN, int type, int bd, int bu){
+    
+    std::cerr << "[do] f=" << gameFrame << "  " << what
+              << "  农民SN=" << farmerSN << "  建筑类型=" << type
+              << "  位置=(" << bd << "," << bu << ")" << std::endl;
+    
+}
+// ===== 每 500 帧打印一次我方现状 =====
+static void DbgStatus(const tagInfo& info){
+    /*
+    if(gameFrame % 500 != 0) return;
+
+    // 各类建筑数量（含在建地基），以及完工/在建总数
+    int bt[BUILDING_TYPE_MAXNUM];
+    for(int i = 0; i < BUILDING_TYPE_MAXNUM; i++) bt[i] = 0;
+    int bDone = 0, bWip = 0;
+    for(const tagBuilding& b : info.buildings){
+        if(b.Type >= 0 && b.Type < BUILDING_TYPE_MAXNUM) bt[b.Type]++;
+        if(b.Percent >= 100) bDone++; else bWip++;
+    }
+
+    // 军队构成
+    int nBow = 0, nThrow = 0, nPriest = 0, nOther = 0;
+    for(const tagArmy& a : info.armies){
+        if(a.Sort == AT_COMPOSITE_BOWMAN)   nBow++;
+        else if(a.Sort == AT_STONE_THROWER) nThrow++;
+        else if(a.Sort == AT_PRIEST)        nPriest++;
+        else                                nOther++;
+    }
+
+    // 任务分配（1食 2木 3石 4金 5田 6建筑工）+ 真空闲人数
+    int tc[7] = {0,0,0,0,0,0,0};
+    for(auto& kv : humantask){
+        int t = kv.second;
+        if(t >= 1 && t <= 6) tc[t]++;
+    }
+    int nIdle = 0;
+    for(const tagFarmer& f : info.farmers)
+        if(f.WorkObjectSN < 0 && f.NowState == HUMAN_STATE_IDLE) nIdle++;
+
+    std::cerr << "[status] f=" << gameFrame
+              << " civ=" << info.civilizationStage
+              << " | food=" << info.Meat << " wood=" << info.Wood
+              << " stone=" << info.Stone << " gold=" << info.Gold
+              << " | pop=" << (int)info.Human_Num << "/" << (int)info.Human_MaxNum
+              << " farmers=" << (int)info.farmers.size()
+              << " idle=" << nIdle
+              << " task(食/木/石/金/田/工)=" << tc[1] << "/" << tc[2] << "/" << tc[3]
+              << "/" << tc[4] << "/" << tc[5] << "/" << tc[6]
+              << " | army(弓/投/祭/他)=" << nBow << "/" << nThrow << "/" << nPriest << "/" << nOther
+              << " | build(done/wip)=" << bDone << "/" << bWip
+              << " center=" << bt[BUILDING_CENTER]
+              << " home=" << bt[BUILDING_HOME]
+              << " stock=" << bt[BUILDING_STOCK]
+              << " granary=" << bt[BUILDING_GRANARY]
+              << " market=" << bt[BUILDING_MARKET]
+              << " farm=" << bt[BUILDING_FARM]
+              << " tower=" << bt[BUILDING_ARROWTOWER]
+              << " camp=" << bt[BUILDING_ARMYCAMP]
+              << " stable=" << bt[BUILDING_STABLE]
+              << " range=" << bt[BUILDING_RANGE]
+              << " collage=" << bt[BUILDING_COLLAGE]
+              << std::endl;
+    */
+}
+
 void UsrAI::processData()
 {   
 //#################################################################################################
@@ -143,40 +221,59 @@ void UsrAI::processData()
     g_ai = this;
     tagInfo info = getInfo();  //本帧快照
     gameFrame = info.GameFrame;
+    DbgStatus(info);  
     getPhase(gameFrame);
-    frame++;
-
-    if(frame%15!=0) return;
-    else frame=1; 
 
      //找我方市镇中心\箭塔和对方大概来向
-    manageInit(info);
+    if(gameFrame-lastframe50>=50){
+        manageInit(info);
+    }
     
     // 造村民
-    manageProduction(info);
+    if(gameFrame-lastframe25>=25){
+        manageProduction(info);
+    }
     
     // 任务管理（采集+建造）
-    manageFarmer(info);
-
-    manageBuild(info);
+    if(gameFrame-lastframe25>=25){
+       manageFarmer(info);
+       manageBuild(info);
+    }
 
     // 探路
-    manageScout(info);
+    if(gameFrame-lastframe15>=15){
+        manageScout(info);
+    }
 
     // 科技研发
-    manageResearch(info);
+    if(gameFrame-lastframe50>=50){
+        manageResearch(info);
+    }
 
     // 造兵
-    manageArmyKite(info);
+    if(gameFrame-lastframe15>=15){
+        manageArmyKite(info);
+    }
 
     // 反攻
-    if(isArmyReady) manageAttackKite(info);
+    if(isArmyReady&&gameFrame-lastframe15>=15) manageAttackKite(info);
 
     // 防御
-    if(phase!=PHASE_ECON) manageDefense(info);
+    if(phase!=PHASE_ECON&&gameFrame-lastframe15>=15){
+        manageDefense(info);
+    }
 
     // 升级时代
-    manageUpdate(info);
+    if(gameFrame-lastframe15>=15){
+        manageUpdate(info);
+        lastframe15=gameFrame;
+    }
+    if(gameFrame-lastframe25>=25){
+        lastframe25=gameFrame;
+    }
+    if(gameFrame-lastframe50>=50){
+        lastframe50=gameFrame;
+    }
 }
 
 int getPhase(int& gameFrame){
@@ -225,6 +322,7 @@ void manageProduction(const tagInfo& info)
         if(b.Type != BUILDING_CENTER) continue;      // 只对市中心
         if(b.Project != ACT_NULL) continue;          // 判断市中心忙不忙
         BuildingAction(b.SN, BUILDING_CENTER_CREATEFARMER);
+         DbgAct("生产村民", b.SN, BUILDING_CENTER_CREATEFARMER);
         return;
     }
 }
@@ -237,6 +335,7 @@ void manageFarmer(const tagInfo& info)
     const double refDR = (mycenterDR >= 0) ? mycenterDR*B : 50*B;   //  找资源一律以市中心为基准
     const double refUR = (mycenterUR >= 0) ? mycenterUR*B : 50*B;
     takenSource.clear();
+    farmTaken =false;
 
     // ---------- 0. 死掉的农民清出任务表（注意 erase 的写法）----------
     {
@@ -258,26 +357,33 @@ void manageFarmer(const tagInfo& info)
     // ---------- 1. 目标人数：升级前田=0；升级后采食的人整体转种田 ----------
     int towernn=0;
     int r=0;
+    int home=0;
+    bool canBuildFarm = false;
     for(const tagBuilding& b:info.buildings){
-        if(b.Type==BUILDING_ARROWTOWER) towernn++;
-        else if(b.Type==BUILDING_RANGE) r++;
+        if(b.Type==BUILDING_ARROWTOWER && b.Percent>=100) towernn++;
+        else if(b.Type==BUILDING_RANGE && b.Percent>=100) r++;
+        else if(b.Type==BUILDING_HOME && b.Percent>=100) home++;
+        else if(b.Type==BUILDING_MARKET && b.Percent>=100) canBuildFarm=true;
     }
     if(towernn>=3) needTower=false;
     if(r>=3){
         homeup=true;
     }
     const bool bronze = (r>=3);
-    int tFood  = bronze ? 0 : wantFood;
-    int tFarm  = bronze ? wantFood : 0;
-    int tWood  = wantWood, tStone = wantStone, tGold = wantGold, tBuild = wantBuild;
-    
-    if(wantFood==8){
-        if(towernn*150+info.Wood>=450){
-            tStone = 0;
-            wantFood+=2;
-        }
+    int tFarm  = 99;
+    int tGold = wantGold;
+    if(home == 13 && r>=3){
+        wantFood +=wantBuild;
+        wantBuild =0;
     }
-
+    int tBuild = wantBuild;
+        if(towernn*150+info.Wood>=450){
+            wantGold += wantStone;
+            wantStone = 0;
+        }
+    int tStone = wantStone;
+    int tWood  = wantWood;
+    int tFood = wantFood;
     // ---------- 2. 资源独占：谁正在采哪块，先全部登记（同一块只会有一个人）----------
     for(const tagFarmer& f : info.farmers)
         if(f.WorkObjectSN >= 0) takenSource[f.WorkObjectSN] = 1;
@@ -299,6 +405,7 @@ void manageFarmer(const tagInfo& info)
                 if(kv.second == t){
                     kv.second = -1; humantaskType[kv.first] = -1; cnt[t]--;
                     if(t == TASK_BUILD) buildSN = -1;
+                    if(t == TASK_STONE && tgt[TASK_STONE] == 0){ kv.second = TASK_WOOD; cnt[TASK_WOOD]++;}
                     moved = true; break;
                 }
             if(!moved) break;
@@ -309,6 +416,7 @@ void manageFarmer(const tagInfo& info)
     static const int prio[6] = { TASK_BUILD, TASK_FOOD,TASK_STONE, TASK_WOOD, TASK_GOLD,TASK_FARM };
     for(int k = 0; k < 6; k++){
         int t = prio[k];
+        if(t == TASK_FARM) continue;
         while(cnt[t] < tgt[t]){
             bool moved = false;
             for(auto& kv : humantask)
@@ -367,84 +475,177 @@ void manageFarmer(const tagInfo& info)
                     break;
                 }
         }
-        if(handOk) continue;
 
-        // ---- 4.2 种田（升级后才有人）----
         if(t == TASK_FARM){
-            if(info.Wood < BUILD_FARM_WOOD+100){
-                if(f.NowState != HUMAN_STATE_IDLE) continue;
-                // 木料不够 → 先去砍木（木头一够，下一拍就会走下面的"种田"分支）
-                int rsn = findNearestResource(info, RESOURCE_TREE, refDR, refUR);
-                if(rsn >= 0){ takenSource[rsn] = 1; HumanAction(f.SN, rsn); }
+            if(f.WorkObjectSN >= 0){
                 continue;
             }
-            // 木料够 → ① 有种好的空田就去种 ② 否则建一块田
-            int freeFarm = -1; double bestD = 1e18;
-            for(const tagBuilding& b : info.buildings){
-                if(b.Type != BUILDING_FARM || b.Percent < 100) continue;
-                bool used = false;
-                for(const tagFarmer& g : info.farmers)
-                    if(g.WorkObjectSN == b.SN){ used = true; break; }
-                if(used) continue;
-                double dd = calDistance(f.DR, f.UR, b.BlockDR*B, b.BlockUR*B);
-                if(dd < bestD){ bestD = dd; freeFarm = b.SN; }
-            }
-            if(freeFarm >= 0){ HumanAction(f.SN, freeFarm); continue; }
-            int bd = -1, bu = -1;
-            if(findBuildSite(info, BUILDING_FARM, myfameDR, myfameUR, bd, bu)){
-                HumanBuild(f.SN, BUILDING_FARM, bd, bu);
-            }else{
-                // 找不到地基 → 也别站着，去采食/砍木
-                int rsn = findNearestResource(info, RESOURCE_BUSH, refDR, refUR);
-                if(rsn < 0) rsn = findNearestResource(info, RESOURCE_TREE, refDR, refUR);
-                if(rsn >= 0){ takenSource[rsn] = 1; HumanAction(f.SN, rsn); }
-            }
-            continue;
+            humantask[f.SN] = TASK_FOOD;
+            humantaskType[f.SN] = -1;
+            t = TASK_FOOD;
         }
+        // ---- 4.2 种田：木头够（150）就强制去种，不管有没有建筑在建 ----
 
+        if(canBuildFarm &&t == TASK_FOOD){
+            static int farmTick = -1;
+            static std::set<int> farmClaimed;                   // 本帧已被认领的田（含 -1 = 有人在建新田）
+            if(farmTick != gameFrame){ farmTick = gameFrame; farmClaimed.clear(); }
+
+            const int farmGate = 200;           // 150 = 建田 75 + 余量 75
+
+            if(info.Wood >= farmGate){
+                // ① 有空田 → 直接去种（每个轮到的空闲食物组农民都能领一块）
+                int freeFarm = -1; double bestD = 1e18;
+                for(const tagBuilding& b : info.buildings){
+                    if(b.Type != BUILDING_FARM || b.Percent < 100) continue;
+                    if(farmClaimed.count(b.SN)) continue;
+                    bool used = false;
+                    for(const tagFarmer& g : info.farmers)
+                        if(g.WorkObjectSN == b.SN){ used = true; break; }
+                    if(used) continue;
+                    double dd = calDistance(f.DR, f.UR, b.BlockDR*B, b.BlockUR*B);
+                    if(dd < bestD){ bestD = dd; freeFarm = b.SN; }
+                }
+                if(freeFarm >= 0){
+                    farmClaimed.insert(freeFarm);
+                    humantask[f.SN] = TASK_FARM;
+                    HumanAction(f.SN, freeFarm);
+                    continue;                                   // 只有真去种田的人 continue
+                }
+                // ② 没有空田 → 本帧只让一个人去建一块新田
+                if(farmClaimed.empty()){
+                    int bd = -1, bu = -1; bool built = false;
+                    int tried[4]; int nTried = 0;
+                    while(!built){
+                        int gDR = -1, gUR = -1, gSN = -1; double bestD = 1e18;
+                        for(const tagBuilding& b : info.buildings){
+                            if(b.Type != BUILDING_GRANARY) continue;          // 只拿谷仓当地标
+                            bool skip = false;
+                            for(int k = 0; k < nTried; k++) if(tried[k] == b.SN){ skip = true; break; }
+                            if(skip) continue;                                 // 这个已经试过了
+                            double dd = calDistance(f.DR, f.UR, b.BlockDR*B, b.BlockUR*B);
+                            if(dd < bestD){ bestD = dd; gDR = b.BlockDR; gUR = b.BlockUR; gSN = b.SN; }
+                        }
+                        if(gSN < 0) break;                                     // 谷仓都试完了
+                        if(nTried < 4) tried[nTried++] = gSN;
+                        if(findBuildSite(info, BUILDING_FARM, gDR, gUR, bd, bu)){
+                            farmClaimed.insert(-1);
+                            humantask[f.SN] = TASK_FARM;
+                            HumanBuild(f.SN, BUILDING_FARM, bd, bu);
+                            built = true;
+                        }
+                    }
+                    if(built) continue;
+                    // 两个谷仓旁边都建不下 → 退回市中心再试一次
+                    if(findBuildSite(info, BUILDING_FARM, mycenterDR, mycenterUR, bd, bu)){
+                        farmClaimed.insert(-1);
+                        humantask[f.SN] = TASK_FARM;
+                        HumanBuild(f.SN, BUILDING_FARM, bd, bu);
+                        DbgBuild("建农田", f.SN, BUILDING_FARM, bd, bu);
+                        continue;
+                    }
+                }
+            }
+        }
+        if(handOk) continue;
         // ---- 4.3 采集类（食/木/石/金）：找一块"没人采"的资源 ----
         if(f.NowState != HUMAN_STATE_IDLE) continue;              // 在走过去/在干活 → 别插队
         int rt = (t == TASK_FOOD)  ? RESOURCE_BUSH  :
                  (t == TASK_WOOD)  ? RESOURCE_TREE  :
                  (t == TASK_STONE) ? RESOURCE_STONE : RESOURCE_GOLD;
-        int rsn = findNearestResource(info, rt, refDR, refUR);
+        int rsn = findNearestResource(info, rt, f.DR, f.UR);
         if(rsn < 0 && t == TASK_FOOD)
-            rsn = findNearestResource(info, RESOURCE_GAZELLE, refDR, refUR);   // 食物：浆果没了就找羚羊
+            rsn = findNearestResource(info, RESOURCE_GAZELLE, f.DR, f.UR);   // 食物：浆果没了就找羚羊
         if(rsn >= 0){
             takenSource[rsn] = 1;
             humantaskType[f.SN] = t;
             HumanAction(f.SN, rsn);
+        }
+    }
+    // 建仓库 谷仓
+    if(info.civilizationStage>= CIVILIZATION_BRONZEAGE) return;
+    int gnum=0;
+    int snum=0;
+    for(const tagBuilding& b:info.buildings){
+        if(b.Type==BUILDING_GRANARY) gnum++;
+        else if(b.Type==BUILDING_STOCK) snum++;
+    }
+    int tWant = -1, wantTask = -1;
+    double needDR = 0, needUR = 0;
+    for(auto& kv : takenSource){
+            int srt = kv.first / 10000;
+            if(srt!=2&&srt!=5)continue;
+            const tagResource* rp = nullptr;
+            for(const tagResource& rr : info.resources)
+                if(rr.SN == kv.first){ rp = &rr; break; }
+            if(rp == nullptr) continue;
+            const tagResource&r = *rp;
+            rp = nullptr;
+            int want = -1, task = -1, need = 0;
+            if(r.Type == RESOURCE_BUSH)          { want = BUILDING_GRANARY; task = TASK_FOOD;  need = 5; }
+            else if(r.Type == RESOURCE_GAZELLE)  { want = BUILDING_STOCK;   task = TASK_FOOD;  need = 4; }
+            else if(r.Type == RESOURCE_TREE)     { want = BUILDING_STOCK;   task = TASK_WOOD;  need = 5; }
+            else if(r.Type == RESOURCE_STONE)    { want = BUILDING_STOCK;   task = TASK_STONE; need = 5; }
+            else if(r.Type == RESOURCE_GOLD)     { want = BUILDING_STOCK;   task = TASK_GOLD;  need = 1; }
+            if(want < 0) continue;
+            if(want==BUILDING_GRANARY && gnum>=3) continue;  // 已有谷仓 → 不建
+            if(want==BUILDING_STOCK && snum>=3) continue;    // 已有仓库 → 不建
 
-            // ---- 4.4 这块资源"挺多"且 20 格内没有对应仓库/谷仓 →
-            //          从本任务里派 1 个人去建（建完前不调走，且不占用建筑工）----
-            bool needDepot = false; int bType = BUILDING_STOCK;
-            double rDR = 0, rUR = 0; int rCnt = 0; int rType = -1;
-            for(const tagResource& r : info.resources)
-                if(r.SN == rsn){ rDR = r.DR; rUR = r.UR; rCnt = r.Cnt; rType = r.Type; break; }
-            if(rCnt >= depotRichCnt){
-                bType = (rType == RESOURCE_BUSH) ? BUILDING_GRANARY : BUILDING_STOCK;
-                bool hasNear = false;
-                for(const tagBuilding& b : info.buildings){
-                    if(b.Type != bType) continue;
-                    if(calDistance(b.BlockDR*B, b.BlockUR*B, rDR, rUR) <= depotRange*B){ hasNear = true; break; }
-                }
-                if(!hasNear) needDepot = true;
+            int cost = (want == BUILDING_GRANARY) ? BUILD_GRANARY_WOOD : BUILD_STOCK_WOOD;
+            if(info.Wood < cost) continue;                        // 木头不够 → 这一拍先不建
+
+            bool hasNear = false;                                 // 20 格内已有对应仓库 → 不用建
+            for(const tagBuilding& b : info.buildings){
+                if(b.Type != want) continue;
+                if(calDistance(b.BlockDR*B, b.BlockUR*B, r.DR, r.UR) <= depotRange*B){ hasNear = true; break; }
             }
-            if(needDepot){
-                int depotWood = (bType == BUILDING_GRANARY) ? BUILD_GRANARY_WOOD : BUILD_STOCK_WOOD;
-                bool already = false;
-                for(const tagBuilding& b : info.buildings)           //已经有同类型的地基 不重复建
-                    if(b.Type == bType && b.Percent < 100){ already = true; break; }
-                if(!already && info.Wood >= depotWood){               // ★ 木头不够就什么都不做 → 他继续采
-                    int bd = -1, bu = -1;
-                    if(findBuildSite(info, bType, (int)(rDR/B), (int)(rUR/B), bd, bu)){
-                        depotJob[f.SN]    = t;                  // ★ 记住原任务
-                        depotJobPos[f.SN] = bd*1000 + bu;
-                        humantask[f.SN]   = t;                  // 名义任务不变
-                        HumanBuild(f.SN, bType, bd, bu);
-                    }
-                }
+            if(hasNear) continue;
+
+            bool building = false;                                // 已有同类型地基在建 → 不重复
+            for(const tagBuilding& b : info.buildings)
+                if(b.Type == want && b.Percent < 100){ building = true; break; }
+            if(building) continue;
+
+            int nears = 0;                                         // ★ 周围同类型资源的块数
+            for(const tagResource& o : info.resources){
+                if(o.Type != r.Type) continue;
+                if(calDistance(r.DR, r.UR, o.DR, o.UR) <= depotRange*B) nears++;
+                if(nears >= need) break;
             }
+            if(nears < need) continue;
+
+            tWant = want; wantTask = task; needDR = r.DR; needUR = r.UR;
+            break;                                                // 一拍最多派一个工地
+    }
+    if(tWant >= 0){
+        int pickSN = -1;
+        for(auto& kv : humantask)                              // ★ 强制：先抽"正在干这类活"的人
+            if(kv.second == wantTask){ pickSN = kv.first; break; }
+        if(pickSN < 0)
+            for(auto& kv : humantask)                          // 该组没人（或都空闲）→ 抽个空闲的
+               if(kv.second == -1){ pickSN = kv.first; break; }
+        if(pickSN >= 0 && pickSN != buildSN){                  // 别占用建筑工
+            int bd = -1, bu = -1;
+            if(findBuildSite(info, tWant, (int)(needDR/B), (int)(needUR/B), bd, bu)){
+                    depotJob[pickSN]    = humantask[pickSN];       // 记住原任务；建完自动回去
+                    depotJobPos[pickSN] = bd*1000 + bu;
+                    HumanBuild(pickSN, tWant, bd, bu);
+                    DbgBuild("建仓库/谷仓", pickSN, tWant, bd, bu);
+            }
+        }
+    }
+    // ===== 临时诊断：谁在闲着（约每 20 秒打一次，定位完删） =====
+    if(gameFrame % 500 == 0){
+        for(const tagFarmer& f : info.farmers){
+            if(f.WorkObjectSN >= 0) continue;
+            if(f.NowState != HUMAN_STATE_IDLE) continue;
+            std::cerr << "[idle] f=" << gameFrame
+                      << " SN=" << f.SN
+                      << " task=" << (humantask.count(f.SN) ? humantask[f.SN] : -99)
+                      << " builder=" << (f.SN == buildSN ? 1 : 0)
+                      << " depot=" << (depotJob.count(f.SN) ? 1 : 0)
+                      << " pos=(" << f.DR/B << "," << f.UR/B << ")"
+                      << std::endl;
         }
     }
 }
@@ -657,6 +858,7 @@ void manageBuild(const tagInfo& info)
                 if(hisWork != foundationSN) HumanAction(buildSN, foundationSN);
             }else{                                       // 没有地基 → 下新建令
                 HumanBuild(buildSN, wantType, buildDR, buildUR);
+                DbgBuild("建建筑", buildSN, wantType, buildDR, buildUR);
             }
             return;
         }
@@ -705,6 +907,8 @@ bool researchIfPossible(const tagInfo& info,int buildingType,int action,
             for(const tagBuilding& b : info.buildings){
                 if(b.Type == buildingType && b.Percent >=100 && b.Project == ACT_NULL){
                     BuildingAction(b.SN,action);
+                    DbgAct("研发科技", b.SN, action);
+                    if(action == BUILDING_RANGE_UPGRADE_COMPOSITE_BOW) rangeTarget = 3;   // 造兵阶段：靶场升级后就可以造复合弓兵了
                     return true;
                 }
             }
@@ -904,11 +1108,13 @@ void manageArmyKite(const tagInfo &info)
             HumanAction(a.SN, a.SN);                                     // 自毁
         }
     }
-    if(!isArmyReady && nBow+nThrow >= wantBowman-15) isArmyReady = true;           // 弓兵成型 → 转入反攻
+    if(!isArmyReady && nBow+nThrow >= wantBowman-10) isArmyReady = true;           // 弓兵成型 → 转入反攻
     // 科技：复合弓（180 食 + 100 木）
     if(nBow < wantBowman&&info.civilizationStage>=CIVILIZATION_BRONZEAGE)
         researchIfPossible(info, BUILDING_RANGE, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, 180, 100, 0, 0);
-    homeTarget=13;
+    if(homeTarget<13 && info.farmers.size()+info.armies.size() >= (homeTarget)*4) homeTarget++;   // 兵营未满员 → 不造复合弓兵
+    if(homeTarget>=8) rangeTarget = 3;
+    if(nBow>=3) rangeTarget = 3; 
     // 造复合弓兵（40 食 + 20 金）
     if(nBow+nThrow <30 
        && info.Meat >= BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN_FOOD
@@ -916,6 +1122,7 @@ void manageArmyKite(const tagInfo &info)
         for(const tagBuilding& b : info.buildings){
             if(b.Type != BUILDING_RANGE) continue;
             if(b.Percent < 100 || b.Project != ACT_NULL) continue;
+            DbgAct("生产复合弓兵", b.SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
             BuildingAction(b.SN, BUILDING_RANGE_CREATE_COMPOSITE_BOWMAN);
             break;
         }
@@ -1005,10 +1212,14 @@ void manageDefense(const tagInfo &info)
         bool threat = false;
         for(const tagArmy& e : info.enemy_armies){
            if(e.Blood <= 0) continue;
-           if(calDistance(e.DR, e.UR, hx, hy) < 35 * BLOCKSIDELENGTH){ threat = true; break; }
+           if(calDistance(e.DR, e.UR, hx, hy) < 30 * BLOCKSIDELENGTH){ threat = true; break; }
         }
+        double xx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * BLOCKSIDELENGTH;
+        double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
+        if(calDistance(xx, yy, hx, hy) < 25 * BLOCKSIDELENGTH) threat = true;
         if(!threat) return;
     }
+    
     bool haveArrowTower = false;
     for(const tagBuilding& b : info.buildings){
         if(b.Type == BUILDING_ARROWTOWER && b.Percent>=100){
@@ -1028,13 +1239,16 @@ void manageDefense(const tagInfo &info)
                 for(const tagArmy& e: info.enemy_armies){
                    if(e.WorkObjectSN != towerSN ){
                         attackTgt = e.SN;
-                        break;
+                        if(e.Sort == AT_STONE_THROWER){
+                            attackTgt = e.SN;
+                            break;
+                        }
                     }
                 }
             }
             if(attackTgt>=0){
                 HumanAction(towerSN,attackTgt);
-                break;
+                continue;
             }
         }
     }
@@ -1046,47 +1260,77 @@ void manageDefense(const tagInfo &info)
         }
     }
     // 祭司转化
-    // 转化成功与否 
-    if(convertTarget >= 0){
-        bool ours = false;
-        for(const tagArmy& a: info.armies){
-            if(a.SN == convertTarget){
-                ours = true;
-                convertTarget = -1;
-                break;
-            }
-        }
-        if(!ours){
-            for(const tagArmy& p : info.armies){
-                if(p.Sort == AT_PRIEST){
-                   if(p.WorkObjectSN != convertTarget) convertTarget = -1;
-                   break;
-                }
-            }
+    // 转化成功与否
+    bool fff=true; 
+    for(const tagArmy& p : info.armies){
+        if(p.SN != priestSN) continue;
+        double xx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * BLOCKSIDELENGTH;
+        double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
+        xx=(xx+mycenterDR*BLOCKSIDELENGTH)/2;
+        yy=(yy+mycenterUR*BLOCKSIDELENGTH)/2;
+        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 8 * BLOCKSIDELENGTH) break;
+        if(calDistance(p.DR, p.UR, xx, yy) > 5 * BLOCKSIDELENGTH){
+           HumanMove(priestSN, xx, yy);
+           fff=false;
+           break;
         }
     }
-    if(convertTarget < 0){
-        bool ff=false;
-        for(const tagArmy& p : info.armies){
-            if(p.Sort == AT_PRIEST){
-               if(p.ConvertCooldown <= 0) ff=true;
-               break;
-            }
+    for(const tagArmy& e: info.enemy_armies){
+        if(calDistance(e.DR, e.UR, hx, hy) < 20 * BLOCKSIDELENGTH){
+            fff=true;
+            break;
         }
-        if(ff){
-            int bestBlood = -1;
-            for(const tagArmy& e: info.enemy_armies){
-                if(e.Blood > bestBlood ){
-                    if(info.GameFrame>=18000&&!wehaveStoneThower&&e.Sort!=AT_STONE_THROWER) continue;
-                    bestBlood = e.Blood; convertTarget = e.SN;
-                }
-                if(e.Sort == AT_STONE_THROWER){
-                    convertTarget = e.SN;
+        fff=false;
+    }
+    if(fff){
+        if(convertTarget >= 0){
+            bool ours = false;
+            for(const tagArmy& a: info.armies){
+                if(a.SN == convertTarget){
+                    ours = true;
+                    convertTarget = -1;
                     break;
                 }
             }
-            if(convertTarget >= 0){
-                HumanAction(priestSN,convertTarget);    
+            if(!ours){
+                for(const tagArmy& p : info.armies){
+                    if(p.Sort == AT_PRIEST){
+                    if(p.WorkObjectSN != convertTarget) convertTarget = -1;
+                    break;
+                    }
+                }
+            }
+        }
+        if(convertTarget < 0){
+            bool ff=false;
+            for(const tagArmy& p : info.armies){
+                if(p.Sort == AT_PRIEST){
+                  if(p.ConvertCooldown <= 0) ff=true;
+                  else{
+                        double xx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * BLOCKSIDELENGTH;
+                        double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
+                        xx=(xx+mycenterDR*BLOCKSIDELENGTH)/2;
+                        yy=(yy+mycenterUR*BLOCKSIDELENGTH)/2;
+                        HumanMove(priestSN, xx, yy);
+                        break;
+                    }
+                }
+            }
+            if(ff){
+                int bestBlood = -1;
+                for(const tagArmy& e: info.enemy_armies){
+                    if(e.Blood > bestBlood ){
+                        if(info.GameFrame>=18000&&!wehaveStoneThower&&e.Sort!=AT_STONE_THROWER) continue;
+                        bestBlood = e.Blood; convertTarget = e.SN;
+                    }
+                    if(e.Sort == AT_STONE_THROWER){
+                        convertTarget = e.SN;
+                        break;
+                    }
+                }
+                if(convertTarget >= 0){
+                    HumanAction(priestSN,convertTarget);    
+                }
             }
         }
     }
@@ -1157,6 +1401,7 @@ void manageUpdate(const tagInfo &info)
                 if(b.Project == ACT_NULL){
                     //researchIfPossible(info,BUILDING_MARKET,BUILDING_MARKET_FARM_UPGRADE,200,50,0,0);
                     BuildingAction(b.SN,BUILDING_CENTER_UPGRADE);
+                    DbgAct("升时代", b.SN, BUILDING_CENTER_UPGRADE);
                 }
                 break;
             }
