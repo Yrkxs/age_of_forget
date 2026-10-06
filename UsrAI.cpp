@@ -52,10 +52,10 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     enum FarmerTask{T0,TASK_FOOD,TASK_WOOD,TASK_STONE,TASK_GOLD,TASK_FARM,TASK_BUILD};
     int taskTarget[7] = {0,0,0,0,0,0,0};
     // ===== 任务分组人数（在这里改）=====
-    int wantFood  = 8;      // 采食（浆果+羚羊）
+    int wantFood  = 7;      // 采食（浆果+羚羊）
     int wantWood  = 7;      // 伐木
     int wantStone = 2;      // 采石
-    int wantGold  = 2;      // 采金
+    int wantGold  = 3;      // 采金
     int wantBuild = 1;      // 建筑工（不建仓库/谷仓）
     bool farmTaken = false;  // 是否已经派人去种田（不设种田组；食物组里只要木头够就抽 1 个人去种）
     // ===== 临时建仓库/谷仓 =====
@@ -377,10 +377,10 @@ void manageFarmer(const tagInfo& info)
         wantBuild =0;
     }
     int tBuild = wantBuild;
-        if(towernn*150+info.Wood>=450){
-            wantGold += wantStone;
+    if(towernn*150+info.Stone>=450||!needTower){
+            wantFood += wantStone;
             wantStone = 0;
-        }
+    }
     int tStone = wantStone;
     int tWood  = wantWood;
     int tFood = wantFood;
@@ -1108,7 +1108,7 @@ void manageArmyKite(const tagInfo &info)
             HumanAction(a.SN, a.SN);                                     // 自毁
         }
     }
-    if(!isArmyReady && nBow+nThrow >= wantBowman-10) isArmyReady = true;           // 弓兵成型 → 转入反攻
+    if(!isArmyReady && nBow+nThrow >= wantBowman-15) isArmyReady = true;           // 弓兵成型 → 转入反攻
     // 科技：复合弓（180 食 + 100 木）
     if(nBow < wantBowman&&info.civilizationStage>=CIVILIZATION_BRONZEAGE)
         researchIfPossible(info, BUILDING_RANGE, BUILDING_RANGE_UPGRADE_COMPOSITE_BOW, 180, 100, 0, 0);
@@ -1148,7 +1148,6 @@ void manageAttackKite(const tagInfo &info)
     if(info.enemy_armies.empty()&&siegeSN>=0&&etowerNum<=3){
         for(const tagArmy& p:info.armies){
             if(p.SN != priestSN) continue;
-            if(p.ConvertCooldown>0) break;
             if(p.WorkObjectSN!=siegeSN){
                 HumanAction(priestSN,siegeSN);
             }
@@ -1161,7 +1160,14 @@ void manageAttackKite(const tagInfo &info)
             break;
         }
     }
-    if(info.enemy_armies.empty()&&siegeSN>=0&&etowerNum==-1) return;
+    if(info.enemy_armies.empty()&&siegeSN>=0&&etowerNum==-1){
+        for(const tagArmy& a: info.armies){
+            if(a.SN == priestSN) continue;
+            if(a.WorkObjectSN==-1){
+                HumanMove(a.SN,50*B,50*B);
+            }
+        }
+    }
     for(const tagArmy& a:info.armies){
         if(a.SN == priestSN) continue;
         if(a.Sort != AT_COMPOSITE_BOWMAN && a.Sort !=AT_STONE_THROWER) continue;
@@ -1172,6 +1178,18 @@ void manageAttackKite(const tagInfo &info)
         }
         if(!info.enemy_armies.empty()){
             const double backR  = (a.Sort == AT_STONE_THROWER) ? 8.0 : 5.0;
+            
+            int batterSN = -1;
+            double batterD = 1e18;
+            if(a.Sort == AT_STONE_THROWER){
+                for(const tagArmy& e : info.enemy_armies){
+                    if(e.Blood <= 0) continue;
+                    if(e.Sort != AT_STONE_THROWER) continue;
+                    double d = calDistance(a.DR, a.UR, e.DR, e.UR);
+                    if(d < batterD){ batterD = d; batterSN = e.SN;  }
+                }
+            }
+
             int tgtSN = -1;
             double tgtD = 1e18;
             double tdr = 0;
@@ -1182,6 +1200,9 @@ void manageAttackKite(const tagInfo &info)
             }
             if(tgtSN>=0&&tgtD<=backR*B){
                 HumanMove(a.SN,mycenterDR*B,mycenterUR*B);
+            }else if(batterSN>=0 && batterD<=(double(DIS_STONE_THROWER)+2.0)*B){
+                if(a.WorkObjectSN!=batterSN)
+                    HumanAction(a.SN,batterSN);
             }else if(tgtSN>=0 && tgtD>backR*B){
                 if(a.WorkObjectSN!=tgtSN)
                     HumanAction(a.SN,tgtSN);
@@ -1216,7 +1237,7 @@ void manageDefense(const tagInfo &info)
         }
         double xx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * BLOCKSIDELENGTH;
         double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
-        if(calDistance(xx, yy, hx, hy) < 25 * BLOCKSIDELENGTH) threat = true;
+        if(calDistance(xx, yy, hx, hy) < 10 * BLOCKSIDELENGTH) threat = true;
         if(!threat) return;
     }
     
@@ -1268,19 +1289,21 @@ void manageDefense(const tagInfo &info)
         double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
         xx=(xx+mycenterDR*BLOCKSIDELENGTH)/2;
         yy=(yy+mycenterUR*BLOCKSIDELENGTH)/2;
-        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 8 * BLOCKSIDELENGTH) break;
+        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 10 * BLOCKSIDELENGTH) break;
         if(calDistance(p.DR, p.UR, xx, yy) > 5 * BLOCKSIDELENGTH){
            HumanMove(priestSN, xx, yy);
            fff=false;
            break;
         }
     }
-    for(const tagArmy& e: info.enemy_armies){
-        if(calDistance(e.DR, e.UR, hx, hy) < 20 * BLOCKSIDELENGTH){
-            fff=true;
-            break;
+    if(fff){
+        for(const tagArmy& e: info.enemy_armies){
+            if(calDistance(e.DR, e.UR, hx, hy) < 20 * BLOCKSIDELENGTH){
+                fff=true;
+                break;
+            }
+            fff=false;
         }
-        fff=false;
     }
     if(fff){
         if(convertTarget >= 0){
