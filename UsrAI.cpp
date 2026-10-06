@@ -67,10 +67,10 @@ static double calDistance   (double a, double b, double c, double d) { return g_
 
     void manageFarmer(const tagInfo& info); 
     int findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,int>& takenSource);
-    int findNearestResource(const tagInfo& info,int resType,double dr,double ur);
+    int findNearestResource(const tagInfo& info,int resType,double dr,double ur,int selfSN=-1);
     bool findBuildSite(const tagInfo& info, int buildingType,int myDR,int myUR, int& outDR, int& outUR);
     int buildBuildingSize(int type);
-    bool canBuildHere(const tagInfo &info, int dr, int ur);
+    bool canBuildHere(const tagInfo &info, int dr, int ur,int size);
     bool overlapsBuilding(const tagInfo &info, int dr, int ur, int size);
     bool unitOnSite(const tagInfo &info, int dr, int ur, int size);
     bool inEnemyZone(double dr, double ur);
@@ -126,6 +126,14 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     int getPhase(int &gameFrame);
     void buildScoutNet(const tagInfo& info);
 
+    // manageRally() 集结
+    
+    vector<int> rallyGroup;              // 正在集结的兵 SN（到齐后清空）
+    set<int>    rallyDone;               // 已经放出去参战的兵 SN
+    int         rallyBatch = 0;          // 已放出批次（0 = 第一批还没出）
+    int         lastRallyOrder = -1000;  // 催集合的帧门
+    static bool inList(const vector<int>& v, int sn){ for(size_t i=0;i<v.size();i++) if(v[i]==sn) return true; return false; }
+    void manageRally(const tagInfo& info);
     // manageArmyKite()
     bool isArmyReady=false;
     int wantBowman = 30;
@@ -254,6 +262,7 @@ void UsrAI::processData()
     // 造兵
     if(gameFrame-lastframe15>=15){
         manageArmyKite(info);
+        //if(info.GameFrame>=25000) manageRally(info);
     }
 
     // 反攻
@@ -554,7 +563,7 @@ void manageFarmer(const tagInfo& info)
         int rt = (t == TASK_FOOD)  ? RESOURCE_BUSH  :
                  (t == TASK_WOOD)  ? RESOURCE_TREE  :
                  (t == TASK_STONE) ? RESOURCE_STONE : RESOURCE_GOLD;
-        int rsn = findNearestResource(info, rt, f.DR, f.UR);
+        int rsn = findNearestResource(info, rt, f.DR, f.UR,f.SN);
         if(rsn < 0 && t == TASK_FOOD)
             rsn = findNearestResource(info, RESOURCE_GAZELLE, f.DR, f.UR);   // 食物：浆果没了就找羚羊
         if(rsn >= 0){
@@ -667,21 +676,39 @@ int findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,i
     return bestSN;
 }
 
-int findNearestResource(const tagInfo& info,int resType,double dr,double ur)
+int findNearestResource(const tagInfo& info,int resType,double dr,double ur,int selfSN)
 {
-    int bestSN = -1;
-    double bestDis = 1e18;
-    for(const tagResource& r : info.resources){
-        if(r.Type !=resType) continue;
-        if(inEnemyZone(r.DR,r.UR)) continue;
-        if(takenSource.count(r.SN)) continue;
-        double dist = calDistance(dr,ur,r.DR,r.UR);
-        if(dist < bestDis){
-            bestDis = dist;
-            bestSN = r.SN;
+    const bool woodCrowd = (resType == RESOURCE_TREE);        //  只对"树"做拥挤过滤
+    for(int pass = 0; pass < (woodCrowd ? 2 : 1); pass++){    // 木头两趟：先躲拥挤，找不到再放宽
+        const bool useCrowd = woodCrowd && (pass == 0);
+        int bestSN = -1;
+        double bestDis = 1e18;
+        for(const tagResource& r : info.resources){
+            if(r.Type != resType) continue;
+            if(inEnemyZone(r.DR,r.UR)) continue;
+            if(takenSource.count(r.SN)) continue;
+            // 如果以后加了"卡死拉黑"，把下面两行打开：
+            // auto bn = resBanUntil.find(r.SN);
+            // if(bn != resBanUntil.end() && bn->second > gameFrame) continue;
+
+            if(useCrowd){                                     // ★ 只有木头会进这里
+                bool crowded = false;
+                for(const tagFarmer& g : info.farmers){
+                    if(g.SN == selfSN) continue;              // 自己不算
+                    if(g.WorkObjectSN < 0) continue;          // 只看正在干活/正走过去的
+                    if(calDistance(g.DR, g.UR, r.DR, r.UR) <= 1.5 * BLOCKSIDELENGTH){
+                        crowded = true; break;                // 别人已经贴着这棵树了 → 换一棵
+                    }
+                }
+                if(crowded) continue;
+            }
+
+            double dist = calDistance(dr,ur,r.DR,r.UR);
+            if(dist < bestDis){ bestDis = dist; bestSN = r.SN; }
         }
+        if(bestSN >= 0) return bestSN;                        // 这一趟找到就返回
     }
-    return bestSN;
+    return -1;
 }
 
 bool inEnemyZone(double dr, double ur)
@@ -716,7 +743,7 @@ bool findBuildSite(const tagInfo& info, int buildingType,int myDR,int myUR, int&
                 int dr = myDR + dx;
                 int ur = myUR + dy;
                 if(dr<0 || ur<0 || dr + size>MAP_L || ur + size>MAP_U) continue;
-                if(canBuildHere(info,dr,ur) && !overlapsBuilding(info,dr,ur,size) && !unitOnSite(info,dr,ur,size)){
+                if(canBuildHere(info,dr,ur,size) && !overlapsBuilding(info,dr,ur,size) && !unitOnSite(info,dr,ur,size)){
                     outDR = dr;
                     outUR = ur;
                     return true;
@@ -733,19 +760,26 @@ int buildBuildingSize(int type)
     return 3;
 }
 
-bool canBuildHere(const tagInfo& info,int dr,int ur)
+bool canBuildHere(const tagInfo& info,int dr,int ur,int size)
 {
     if(info.theMap == nullptr) return false;
-    auto x = info.theMap->size();
-    int limDR = (int)x;
-    int limUR;
-    if(limDR>0){
-        auto y = (*info.theMap)[0].size();
-        limUR = (int)y;
-    }else{
-        limUR = 0;
+    const vector<vector<tagTerrain>>& tm = *info.theMap;
+    const int limDR = (int)tm.size();
+    if(limDR <= 0) return false;
+    const int limUR = (int)tm[0].size();
+    if(dr < 0 || ur < 0 || dr + size > limDR || ur + size > limUR) return false;
+
+    const int h0 = tm[dr][ur].height;
+    if(h0 == -1) return false;                                   // 地基角落在海里
+
+    for(int i = 0; i < size; i++){
+        for(int j = 0; j < size; j++){
+            const tagTerrain& t = tm[dr+i][ur+j];
+            if(t.type == MAPPATTERN_UNKNOWN) return false;       //  未探索 → 换一格
+            if(t.type == MAPPATTERN_OCEAN)   return false;       // 海/河
+            if(t.height != h0)               return false;       // 高度不一致 = 斜坡
+        }
     }
-    if(dr < 0 || ur < 0 || dr >= limDR || ur >= limUR) return false;
     return true;
 }
 
@@ -1146,7 +1180,7 @@ void manageAttackKite(const tagInfo &info)
         double d = calDistance(b.BlockDR, b.BlockUR, mycenterDR, mycenterUR);
         if(d < bestTd){ bestTd = d; etowerSN = b.SN; etowerBL = b.BlockDR; etowerBU = b.BlockUR; }
     }
-    if(info.enemy_armies.empty()&&siegeSN>=0&&etowerNum<=3){
+    if(info.enemy_armies.empty()&&siegeSN>=0&&etowerNum<=2){
         for(const tagArmy& p:info.armies){
             if(p.SN != priestSN) continue;
             if(p.WorkObjectSN!=siegeSN){
@@ -1172,7 +1206,7 @@ void manageAttackKite(const tagInfo &info)
     for(const tagArmy& a:info.armies){
         if(a.SN == priestSN) continue;
         if(a.Sort != AT_COMPOSITE_BOWMAN && a.Sort !=AT_STONE_THROWER) continue;
-        
+        if(inList(rallyGroup,a.SN)) continue;
         if(info.enemy_armies.empty()&&etowerNum==-1&&siegeSN==-1){
             HumanMove(a.SN,enemyDR*B,enemyUR*B);
             continue;
@@ -1182,14 +1216,16 @@ void manageAttackKite(const tagInfo &info)
             
             int batterSN = -1;
             double batterD = 1e18;
-            if(a.Sort == AT_STONE_THROWER){
-                for(const tagArmy& e : info.enemy_armies){
-                    if(e.Blood <= 0) continue;
-                    if(e.Sort != AT_STONE_THROWER) continue;
-                    double d = calDistance(a.DR, a.UR, e.DR, e.UR);
-                    if(d < batterD){ batterD = d; batterSN = e.SN;  }
-                }
+            const double batterR = (a.Sort == AT_STONE_THROWER)
+                                 ? (double(DIS_STONE_THROWER) + 2.0)      // 投石车：10+2 = 12 格
+                                 : (double(DIS_COMPOSITE_BOWMAN) + 1.0);  //  弓兵：7+1 = 8 格
+            for(const tagArmy& e : info.enemy_armies){
+                if(e.Blood <= 0) continue;
+                if(e.Sort != AT_STONE_THROWER) continue;                  // 只盯对面投石车
+                double d = calDistance(a.DR, a.UR, e.DR, e.UR);
+                if(d <= batterD){ batterD = d; batterSN = e.SN; }
             }
+            if(batterSN >= 0 && batterD > batterR * B) batterSN = -1; 
 
             int tgtSN = -1;
             double tgtD = 1e18;
@@ -1201,7 +1237,7 @@ void manageAttackKite(const tagInfo &info)
             }
             if(tgtSN>=0&&tgtD<=backR*B){
                 HumanMove(a.SN,mycenterDR*B,mycenterUR*B);
-            }else if(batterSN>=0 && batterD<=(double(DIS_STONE_THROWER)+2.0)*B){
+            }else if(batterSN>=0 && batterD<=batterR*B){
                 if(a.WorkObjectSN!=batterSN)
                     HumanAction(a.SN,batterSN);
             }else if(tgtSN>=0 && tgtD>backR*B){
@@ -1429,6 +1465,62 @@ void manageUpdate(const tagInfo &info)
                 }
                 break;
             }
+        }
+    }
+}
+
+// ===== 反攻集结 =====
+void manageRally(const tagInfo& info)
+{
+    const double B  = BLOCKSIDELENGTH;
+    const double gx = (MAP_L / 2.0) * B;          // (50,50)
+    const double gy = (MAP_U / 2.0) * B;
+    const double ARRIVE = 6 * B;
+
+    // 1) 把死掉的从集结队列剔掉
+    for(size_t i = 0; i < rallyGroup.size(); ){
+        bool alive = false;
+        for(const tagArmy& a : info.armies) if(a.SN == rallyGroup[i]){ alive = true; break; }
+        if(alive) ++i; else rallyGroup.erase(rallyGroup.begin() + i);
+    }
+
+    // 2) 新兵入列（没在集结、也没参战过的弓兵/投石车）
+    for(const tagArmy& a : info.armies){
+        if(a.SN == priestSN) continue;
+        if(a.Sort != AT_COMPOSITE_BOWMAN && a.Sort != AT_STONE_THROWER) continue;
+        if(inList(rallyGroup, a.SN)) continue;
+        if(rallyDone.count(a.SN)) continue;
+        rallyGroup.push_back(a.SN);               //  新兵自动进本批
+    }
+
+    const int need = (rallyBatch == 0) ? 15 : 5;  //  第一批 15，之后每批 5
+
+    // 3) 到齐 → 整批放出去
+    vector<int> readySN;
+    for(size_t i = 0; i < rallyGroup.size(); i++){
+        if(rallyDone.count(rallyGroup[i])) continue;      // 已经放出去的不算
+        double d = 1e18;
+        for(const tagArmy& a : info.armies)
+            if(a.SN == rallyGroup[i]){ d = calDistance(a.DR, a.UR, gx, gy); break; }
+        if(d <= ARRIVE) readySN.push_back(rallyGroup[i]);
+    }
+    // 4) 
+    if((int)readySN.size() >= need){
+        for(int i = 0; i < need; i++){
+            rallyDone.insert(readySN[i]);                 // 加入战斗
+            std::cerr << "[rally] 第 " << (rallyBatch+1) << " 批出发 f=" << gameFrame
+                      << " SN=" << readySN[i] << " (" << (i+1) << "/" << need << ")" << std::endl;
+        }
+        rallyBatch++;
+    }
+
+    // 4) 没到齐 → 每 25 帧催一次（别每帧下，会把路径清空）
+    for(size_t i = 0; i < rallyGroup.size(); i++){
+        if(rallyDone.count(rallyGroup[i])) continue;
+        for(const tagArmy& a : info.armies){
+            if(a.SN != rallyGroup[i]) continue;
+            if(calDistance(a.DR, a.UR, gx, gy) > 8 * B) HumanMove(a.SN, gx, gy);
+            break;
         }
     }
 }
