@@ -1135,7 +1135,7 @@ void manageArmyKite(const tagInfo &info)
         else if(a.Sort == AT_STONE_THROWER) nThrow++;
     }
     // 兵种清洗：留复合弓兵 / 投石车 / 祭司，其余自杀
-    if(info.armies.size()>10){
+    if(info.armies.size()>10&&info.GameFrame>25000){
         
         for(const tagArmy& a : info.armies){
             if(a.SN == priestSN) continue;
