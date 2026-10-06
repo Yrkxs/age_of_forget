@@ -147,6 +147,7 @@ static void DbgAct(const char* what, int buildSN, int act){
     std::cerr << "[do] f=" << gameFrame << "  " << what
               << "  建筑SN=" << buildSN << "  动作号=" << act << std::endl;
     
+    
 }
 static void DbgBuild(const char* what, int farmerSN, int type, int bd, int bu){
     
@@ -1289,7 +1290,7 @@ void manageDefense(const tagInfo &info)
         double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
         xx=(xx+mycenterDR*BLOCKSIDELENGTH)/2;
         yy=(yy+mycenterUR*BLOCKSIDELENGTH)/2;
-        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 10 * BLOCKSIDELENGTH) break;
+        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 15 * BLOCKSIDELENGTH) break;
         if(calDistance(p.DR, p.UR, xx, yy) > 5 * BLOCKSIDELENGTH){
            HumanMove(priestSN, xx, yy);
            fff=false;
