@@ -63,7 +63,7 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     map<int,int> depotJobPos;   // 农民SN -> 工地块(dr*1000+ur)
     int depotRange   = 20;           // 多少格内没有仓库/谷仓才去建
     int depotRichCnt = 150;          // 资源"挺多"的门槛
-    int enemySafeBlocks = 25;
+    int enemySafeBlocks = 18;
 
     void manageFarmer(const tagInfo& info); 
     int findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,int>& takenSource);
@@ -1207,8 +1207,7 @@ void manageAttackKite(const tagInfo &info)
         for(const tagArmy& a: info.armies){
             if(a.SN == priestSN) continue;
             if(a.WorkObjectSN==-1){
-                HumanMove(a.SN,50*B,50*B);
-            }
+                if(calDistance(a.DR,a.UR,enemyDR*BLOCKSIDELENGTH,enemyUR*BLOCKSIDELENGTH)<5*BLOCKSIDELENGTH){    HumanMove(a.SN,50*B,50*B);}
         }
     }
     for(const tagArmy& a:info.armies){
