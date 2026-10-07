@@ -63,7 +63,7 @@ static double calDistance   (double a, double b, double c, double d) { return g_
     map<int,int> depotJobPos;   // 农民SN -> 工地块(dr*1000+ur)
     int depotRange   = 20;           // 多少格内没有仓库/谷仓才去建
     int depotRichCnt = 150;          // 资源"挺多"的门槛
-    double enemySafeBlocks = 30.0;
+    int enemySafeBlocks = 25;
 
     void manageFarmer(const tagInfo& info); 
     int findNearestFood(const tagInfo& info,double dr,double ur,const std::map<int,int>& takenSource);
@@ -717,7 +717,15 @@ bool inEnemyZone(double dr, double ur)
     double d = calDistance(dr, ur,
                            enemyDR * BLOCKSIDELENGTH,
                            enemyUR * BLOCKSIDELENGTH);
-    return d <= enemySafeBlocks * BLOCKSIDELENGTH;
+    int myDR = (mycenterDR < MAP_L / 2) ? 15 : 85;    // 自家角
+    int myUR = (mycenterUR < MAP_U / 2) ? 15 : 85;
+    int oDR  = 100 - myDR;                              // 对角（敌人家方向）
+    int oUR  = 100 - myUR;
+    double cx[2] = { (double)myDR*BLOCKSIDELENGTH, (double)oDR*BLOCKSIDELENGTH };        // 两个相邻角 = 各换一个坐标
+    double cy[2] = { (double)oUR*BLOCKSIDELENGTH , (double)myUR*BLOCKSIDELENGTH };
+    for(int i = 0; i < 2; i++)
+        if(fabs(dr - cx[i]) <= (double)enemySafeBlocks*BLOCKSIDELENGTH && fabs(ur - cy[i]) <= (double)enemySafeBlocks*BLOCKSIDELENGTH   ) return true;
+    return false;
 }
 
 int countBuilding(const tagInfo& info,int type)
@@ -1274,42 +1282,10 @@ void manageDefense(const tagInfo &info)
         }
         double xx = (myarrowDR >= 0 ? myarrowDR : mycenterDR) * BLOCKSIDELENGTH;
         double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
-        if(calDistance(xx, yy, hx, hy) < 10 * BLOCKSIDELENGTH) threat = true;
+        if(calDistance(xx, yy, hx, hy) < 20 * BLOCKSIDELENGTH) threat = true;
         if(!threat) return;
     }
     
-    bool haveArrowTower = false;
-    for(const tagBuilding& b : info.buildings){
-        if(b.Type == BUILDING_ARROWTOWER && b.Percent>=100){
-            haveArrowTower = true;
-            towerSN = b.SN;
-            int attackTgt = -1;
-            bool isPriestAttack = false;
-            for(const tagArmy& e: info.enemy_armies){
-                attackTgt = e.SN;
-                if(e.WorkObjectSN == priestSN){
-                   attackTgt = e.SN;
-                   isPriestAttack = true;
-                   break;
-                }
-            }
-            if(!isPriestAttack){
-                for(const tagArmy& e: info.enemy_armies){
-                   if(e.WorkObjectSN != towerSN ){
-                        attackTgt = e.SN;
-                        if(e.Sort == AT_STONE_THROWER){
-                            attackTgt = e.SN;
-                            break;
-                        }
-                    }
-                }
-            }
-            if(attackTgt>=0){
-                HumanAction(towerSN,attackTgt);
-                continue;
-            }
-        }
-    }
     bool wehaveStoneThower=false;
     for(const tagArmy& a:info.armies){
        if(a.Sort==AT_STONE_THROWER){
@@ -1326,22 +1302,14 @@ void manageDefense(const tagInfo &info)
         double yy = (myarrowUR >= 0 ? myarrowUR : mycenterUR) * BLOCKSIDELENGTH;
         xx=(xx+mycenterDR*BLOCKSIDELENGTH)/2;
         yy=(yy+mycenterUR*BLOCKSIDELENGTH)/2;
-        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 15 * BLOCKSIDELENGTH) break;
-        if(calDistance(p.DR, p.UR, xx, yy) > 5 * BLOCKSIDELENGTH){
+        if(p.WorkObjectSN >= 0 && calDistance(p.DR, p.UR, xx, yy) < 10 * BLOCKSIDELENGTH) break;
+        if(calDistance(p.DR, p.UR, xx, yy) > 6 * BLOCKSIDELENGTH){
            HumanMove(priestSN, xx, yy);
            fff=false;
            break;
         }
     }
-    if(fff){
-        for(const tagArmy& e: info.enemy_armies){
-            if(calDistance(e.DR, e.UR, hx, hy) < 20 * BLOCKSIDELENGTH){
-                fff=true;
-                break;
-            }
-            fff=false;
-        }
-    }
+   
     if(fff){
         if(convertTarget >= 0){
             bool ours = false;
@@ -1408,13 +1376,15 @@ void manageDefense(const tagInfo &info)
             const double KEEP = double(DIS_STONE_THROWER) - 1.0;  // 想保持 9 格（射程 10）
             const double PULL = KEEP - 3.0;                       // 敌人进到 6 格内 → 开始往后拉
             if(eSN >= 0 && eD <= PULL*B ){
-                double rx, ry;                              
-                if(calDistance(a.DR,a.UR,mycenterDR*B,mycenterUR*B)>5*B){
+                double rx, ry; 
+                bool tr=true;                             
+                if(calDistance(a.DR,a.UR,mycenterDR*B,mycenterUR*B)>8*B){
                     rx = mycenterDR*B + B/2;
                     ry = mycenterUR*B + B/2;
-                }else{
-                    rx = enemyDR*B;
-                    ry = enemyUR*B;
+                    tr=false;
+                }else if(tr&&calDistance(a.DR,a.UR,50*B,50*B)>8*B){
+                    rx = 50*B;
+                    ry = 50*B;
                 }
                 
                 HumanMove(a.SN, rx, ry);
@@ -1436,7 +1406,39 @@ void manageDefense(const tagInfo &info)
         }
         if(tgt>=0) HumanAction(a.SN,tgt);
     }
-
+    
+    bool haveArrowTower = false;
+    for(const tagBuilding& b : info.buildings){
+        if(b.Type == BUILDING_ARROWTOWER && b.Percent>=100){
+            haveArrowTower = true;
+            towerSN = b.SN;
+            int attackTgt = -1;
+            bool isPriestAttack = false;
+            for(const tagArmy& e: info.enemy_armies){
+                attackTgt = e.SN;
+                if(e.WorkObjectSN == priestSN){
+                   attackTgt = e.SN;
+                   isPriestAttack = true;
+                   break;
+                }
+            }
+            if(!isPriestAttack){
+                for(const tagArmy& e: info.enemy_armies){
+                   if(e.WorkObjectSN != towerSN ){
+                        attackTgt = e.SN;
+                        if(e.Sort == AT_STONE_THROWER){
+                            attackTgt = e.SN;
+                            break;
+                        }
+                    }
+                }
+            }
+            if(attackTgt>=0){
+                HumanAction(towerSN,attackTgt);
+                continue;
+            }
+        }
+    }
     if(!haveArrowTower){
         for(const tagArmy& a: info.armies){
             if(a.SN == priestSN){
