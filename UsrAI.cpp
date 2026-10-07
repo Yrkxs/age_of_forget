@@ -1208,6 +1208,8 @@ void manageAttackKite(const tagInfo &info)
             if(a.SN == priestSN) continue;
             if(a.WorkObjectSN==-1){
                 if(calDistance(a.DR,a.UR,enemyDR*BLOCKSIDELENGTH,enemyUR*BLOCKSIDELENGTH)<5*BLOCKSIDELENGTH){    HumanMove(a.SN,50*B,50*B);}
+        
+            }
         }
     }
     for(const tagArmy& a:info.armies){
